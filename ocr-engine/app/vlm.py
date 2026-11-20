@@ -96,7 +96,9 @@ class VlmClient:
             self._post('/api/show', {'model': self.model}, timeout=30)
         except RuntimeError:
             self._post('/api/pull', {'model': self.model, 'stream': False}, timeout=pull_timeout)
-        self._post('/api/generate', {'model': self.model, 'prompt': '', 'keep_alive': self.keep_alive}, timeout=300)
+        # Load with the same num_ctx as real requests; a different value makes Ollama reload the model.
+        self._post('/api/generate', {'model': self.model, 'prompt': '', 'keep_alive': self.keep_alive,
+                                     'options': {'num_ctx': self.num_ctx}}, timeout=300)
 
     def read_page(self, png: bytes) -> Tuple[str, str]:
         """Return (markdown, done_reason). done_reason 'length' means the output was cut off."""

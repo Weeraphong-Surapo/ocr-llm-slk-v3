@@ -210,3 +210,27 @@ def test_vlm_request_sets_context_window_and_unescapes_html():
     text, reason = client.read_page(b'png')
     assert sent['options']['num_ctx'] == 12288 and sent['options']['num_predict'] == 100
     assert text == 'BEST MOVING&SERVICE CO.,LTD.' and reason == 'stop'
+
+
+def test_codes_on_real_invoice_with_near_identical_codes():
+    # Real PaddleOCR + Typhoon output for the BEST MOVING tax invoice.
+    paddle = """ชายซาก OF50010 ผ้าใบในล่อน
+ขายซาก OF50011 ดู้ทำน้ำเย็น VICTOR/VY-2221
+ขายซาก OR50016 ทาโพลีนรีตสำเร็จรูป
+ขายซาก OF50020 เครื่องเซียร 4" BOSCH
+ขายชาก 0F50024สว่านโรตารี2-26
+ขายซาก OF50025 บล๊อคชุด
+ขายซาก OP50026 บล้อคลม
+ขายซาก OF50027 เก้าอื้บริหาร MODEN"""
+    vlm = "OFS0010 OF50011 OF50016 OF50020 OF50024 OF50025 OFS0026 OF50027"
+    flags = {f['text'] for f in find_suspicious(vlm, paddle)}
+    assert flags == {'OFS0010', 'OFS0026'}
+
+
+def test_warm_up_uses_the_same_context_window_as_jobs():
+    calls = []
+    client = VlmClient('http://x', 'm', 1, 100, '-1', num_ctx=12288)
+    client._post = lambda path, payload, timeout: calls.append((path, payload)) or {}
+    client.ensure_model()
+    warm = [p for path, p in calls if path == '/api/generate'][0]
+    assert warm['options']['num_ctx'] == 12288 and warm['keep_alive'] == -1

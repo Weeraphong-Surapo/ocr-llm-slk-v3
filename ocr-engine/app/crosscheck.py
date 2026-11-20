@@ -72,12 +72,13 @@ def _code_confirmed(code: str, paddle_codes: List[str]) -> bool:
     """
     if code in paddle_codes:
         return True
-    best, best_ratio = None, 0.0
-    for candidate in paddle_codes:
-        ratio = SequenceMatcher(None, code, candidate, autojunk=False).ratio()
-        if ratio > best_ratio:
-            best, best_ratio = candidate, ratio
-    return best is not None and best_ratio >= 0.6 and _digits(best) == _digits(code)
+    # Any similar PaddleOCR code with the same digits confirms it. Picking only the single most
+    # similar code fails on invoices full of near-identical codes (OF50010, OF50016, OR50016...).
+    digits = _digits(code)
+    return any(
+        _digits(candidate) == digits and SequenceMatcher(None, code, candidate, autojunk=False).ratio() >= 0.6
+        for candidate in paddle_codes
+    )
 
 
 def find_suspicious(vlm_markdown: str, paddle_text: str, min_similarity: float = 0.6) -> List[Dict[str, object]]:
