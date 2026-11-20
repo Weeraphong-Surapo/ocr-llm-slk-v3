@@ -4,5 +4,6 @@ python-multipart==0.0.20
 PyMuPDF==1.25.3
 numpy==1.26.4
 Pillow==11.1.0
-paddleocr==3.0.3
+paddleocr==3.7.0
+paddlex==3.7.2
 # PaddlePaddle is provided by the CUDA base image.

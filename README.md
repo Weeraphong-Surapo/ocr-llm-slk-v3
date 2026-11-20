@@ -40,9 +40,8 @@ Current development limitation: job store is in-memory and queue is in-process. 
 
 The OCR engine now loads this model at startup:
 
-- PaddleOCR 3.0.3
-- `PP-OCRv5_mobile_det` + `PP-OCRv5_mobile_rec`
-- `lang=th`
+- PaddleOCR 3.7.0 (PaddleX 3.7.2)
+- `PP-OCRv5_mobile_det` + `th_PP-OCRv5_mobile_rec` (Thai)
 - `OCR_DEVICE=gpu:0` in Coolify
 - PDF pages rendered one at a time with PyMuPDF
 

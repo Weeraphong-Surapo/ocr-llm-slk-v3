@@ -19,7 +19,7 @@ def health() -> Dict[str, Any]:
     return {
         'status': 'ok',
         'model_ready': engine.ready,
-        'model': 'PaddleOCR PP-OCRv5 mobile / lang=th',
+        'model': 'PaddleOCR PP-OCRv5 mobile det + th_PP-OCRv5_mobile_rec',
         'device': engine.device,
         'model_error': engine.error,
     }
