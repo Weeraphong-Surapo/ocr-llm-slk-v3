@@ -1,12 +1,28 @@
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed'
 
+export type ReviewItem = {
+  page_number: number
+  text: string | null
+  reason: 'low_similarity' | 'number_or_email_not_confirmed' | 'vlm_failed' | 'vlm_unavailable' | 'vlm_output_truncated'
+  similarity: number | null
+  detail?: string | null
+}
+
 export type OcrPage = {
   page_number: number
   text: string
+  source?: 'vlm' | 'paddleocr'
+  paddle_text?: string
   lines: Array<{ text: string; confidence: number | null; bbox: number[][] | null }>
+  review?: ReviewItem[]
 }
 
-export type OcrResult = { pages: OcrPage[]; text: string }
+export type OcrResult = {
+  pages: OcrPage[]
+  text: string
+  review?: ReviewItem[]
+  engines?: { ocr: string; vlm: string | null }
+}
 
 export type Job = {
   id: string

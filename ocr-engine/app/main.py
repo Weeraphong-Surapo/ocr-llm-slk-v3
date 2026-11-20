@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional
 import os
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from .engine import OcrEngine
 
@@ -22,6 +23,10 @@ def health() -> Dict[str, Any]:
         'model': 'PaddleOCR PP-OCRv5 mobile det + th_PP-OCRv5_mobile_rec',
         'device': engine.device,
         'model_error': engine.error,
+        'vlm_enabled': engine.vlm is not None,
+        'vlm_model': engine.vlm.model if engine.vlm else None,
+        'vlm_ready': engine.vlm_ready,
+        'vlm_error': engine.vlm_error,
     }
 
 
@@ -55,7 +60,8 @@ async def ocr(file: UploadFile = File(...), prompt: str = Form(...)) -> Dict[str
         raise HTTPException(status_code=503, detail=engine.error or 'OCR model is not ready')
     data = await file.read()
     try:
-        return engine.process(data, file.content_type or '')
+        # Typhoon takes seconds per page; keep the event loop free so /health stays responsive.
+        return await run_in_threadpool(engine.process, data, file.content_type or '')
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

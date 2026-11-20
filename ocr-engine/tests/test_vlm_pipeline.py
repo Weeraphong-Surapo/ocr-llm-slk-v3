@@ -1,0 +1,127 @@
+import time
+
+import numpy as np
+
+from app.crosscheck import document_words, find_suspicious
+from app.engine import OcrEngine
+from app.vlm import prepare_vlm_image
+
+# PaddleOCR output for the sample receipt (upscaled run), trimmed to the relevant lines.
+PADDLE = """ซึ่อลุกค้า
+บริษัก ยืมเอเจนธีแอนด์ อิจิกอล จากัด
+559/21 อนนพหลโยริน แขวงจอนพล เขตจตุจักร กรุดกพษ 10900
+เลบผู้เสียภาธิ
+098-765-4310
+helloobeardigiral.co.th
+ผูติดซ่อ
+คุณเจนจิรา
+เบอร์โกรศัพท์
+098-765-4310
+88/8 หนู่ที่ 3 ต่านสบางแน่นาง จาเกอ
+บางใหญ่จังหวัอนนกบุรี11140
+9,630 บาก"""
+
+# Typhoon output with the errors it actually produced on the sample.
+TYPHOON = """ชื่อลูกค้า บริษัท บีบีเอเจนซี่ แอนด์ ดีวิกอล จำกัด
+ที่อยู่ 559/21 ถนนพหลโยธิน แขวงจอมพล เขตจตุจักร
+เลขผู้เสียภาษี 098-765-4310 อีเมล์ hello@boeandigital.co.th
+ผู้ติดต่อ คุณเจนจิรา 058-765-4310
+ที่อยู่ 88/8 หมู่ที่ 3 ตำบลบางบอนป่าขาว อำเภอบางใหญ่ จังหวัดสมุทรปราการ 11140
+<figure>
+ภาพประกอบเป็นรูปแมวลายเสือสีส้ม
+</figure>
+<table><tr><td>จำนวนเงินรวมทั้งสิ้น</td><td>**9,630** บาท</td></tr></table>"""
+
+
+def flagged(markdown: str) -> set:
+    return {item['text'] for item in find_suspicious(markdown, PADDLE)}
+
+
+def test_invented_and_misread_values_are_flagged():
+    flags = flagged(TYPHOON)
+    for wrong in ['058-765-4310', 'hello@boeandigital.co.th', 'ตำบลบางบอนป่าขาว', 'จังหวัดสมุทรปราการ', 'บีบีเอเจนซี่']:
+        assert wrong in flags, wrong
+
+
+def test_correct_values_supported_by_paddle_are_not_flagged():
+    flags = flagged(TYPHOON)
+    for right in ['098-765-4310', 'คุณเจนจิรา', 'ถนนพหลโยธิน', 'แขวงจอมพล', '11140', '9,630']:
+        assert right not in flags, right
+
+
+def test_figure_descriptions_and_markup_are_ignored():
+    words = document_words(TYPHOON)
+    assert 'ภาพประกอบเป็นรูปแมวลายเสือสีส้ม' not in words
+    assert '9,630' in words and 'td' not in words
+
+
+def test_crosscheck_is_fast_enough():
+    started = time.time()
+    find_suspicious(TYPHOON * 5, PADDLE * 5)
+    assert time.time() - started < 2.0
+
+
+def test_prepare_vlm_image_enlarges_small_and_shrinks_large():
+    from PIL import Image
+    import io
+    png, factor = prepare_vlm_image(np.zeros((660, 465, 3), dtype=np.uint8), 1300, 1800)
+    assert round(factor, 3) == round(1300 / 660, 3)
+    assert Image.open(io.BytesIO(png)).size == (round(465 * factor), 1300)
+    _, factor = prepare_vlm_image(np.zeros((3600, 2400, 3), dtype=np.uint8), 1300, 1800)
+    assert factor == 0.5
+
+
+class FakePipeline:
+    def predict(self, image):
+        return [{'rec_texts': ['คุณเจนจิรา', '098-765-4310'], 'rec_scores': [0.9, 0.99],
+                 'rec_polys': [[[0, 0], [10, 0], [10, 10], [0, 10]]] * 2}]
+
+
+class FakeVlm:
+    model = 'fake-typhoon'
+
+    def __init__(self, output=None, error=None):
+        self.output, self.error = output, error
+
+    def read_page(self, png):
+        if self.error:
+            raise self.error
+        return self.output, 'stop'
+
+
+def make_engine(vlm, ready=True):
+    engine = OcrEngine(vlm=vlm)
+    engine.pipeline = FakePipeline()
+    engine.vlm_ready = ready
+    return engine
+
+
+def png_bytes():
+    from PIL import Image
+    import io
+    buffer = io.BytesIO()
+    Image.new('RGB', (100, 80), 'white').save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+def test_engine_uses_vlm_text_and_reports_review():
+    result = make_engine(FakeVlm('คุณเจนจิรา 058-765-4310')).process(png_bytes(), 'image/png')
+    page = result['pages'][0]
+    assert page['source'] == 'vlm' and page['text'].startswith('คุณเจนจิรา')
+    assert page['paddle_text'] == 'คุณเจนจิรา\n098-765-4310'
+    assert [r['text'] for r in result['review']] == ['058-765-4310']
+    assert result['review'][0]['page_number'] == 1
+    assert result['engines']['vlm'] == 'fake-typhoon'
+
+
+def test_engine_falls_back_to_paddle_and_flags_when_vlm_fails():
+    result = make_engine(FakeVlm(error=RuntimeError('boom'))).process(png_bytes(), 'image/png')
+    assert result['pages'][0]['source'] == 'paddleocr'
+    assert result['review'][0]['reason'] == 'vlm_failed'
+
+
+def test_engine_flags_when_vlm_not_ready():
+    result = make_engine(FakeVlm('x'), ready=False).process(png_bytes(), 'image/png')
+    assert result['pages'][0]['source'] == 'paddleocr'
+    assert result['review'][0]['reason'] == 'vlm_unavailable'
+    assert result['engines']['vlm'] is None

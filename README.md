@@ -48,6 +48,15 @@ The OCR engine now loads this model at startup:
 
 If the model cannot load, `/health` reports `model_ready: false` and `/ocr` returns HTTP 503; it never fabricates OCR output. GPU/model startup still requires verification on the actual Ubuntu/NVIDIA host.
 
+## Thai accuracy: Typhoon OCR + PaddleOCR cross-check
+
+Each page is read by two models at the same time:
+
+- **Typhoon OCR 1.5 3B** (`scb10x/typhoon-ocr1.5-3b`, served by the project's own `ollama` service) produces the main text as Markdown, with tables as HTML. It reads Thai far better than PaddleOCR but can invent plausible text or misread digits.
+- **PaddleOCR** provides `lines` with `bbox`/`confidence` and cross-checks Typhoon. Typhoon words with no similar PaddleOCR text (`REVIEW_MIN_SIMILARITY`, default 0.6), and numbers/emails PaddleOCR did not read the same way, are listed in `review`.
+
+`review` is a list of things to check by hand, not a verdict: it also contains words Typhoon read correctly but PaddleOCR misread. If Typhoon is not ready or fails, the page falls back to PaddleOCR text (`source: "paddleocr"`) and `review` says why. On first start the OCR engine pulls the model (about 3.2 GB) in the background; `/health` shows `vlm_ready`. Images are resized for Typhoon so the long side is 1300–1800 px (`VLM_MIN_LONG_SIDE`, `VLM_MAX_LONG_SIDE`). Measure accuracy on your own documents with `eval/` before relying on it.
+
 ## Coolify deployment
 
 ใช้ไฟล์แยกสำหรับ production:
@@ -61,7 +70,7 @@ POSTGRES_USER=ocrllm POSTGRES_PASSWORD=test-only POSTGRES_DB=ocrllm \
 
 ใน Coolify ให้เลือก `docker-compose.coolify.yml` และ expose เฉพาะ service `api` ที่ port `3000` เท่านั้น ส่วน Redis, PostgreSQL และ OCR engine ใช้ `expose` ภายใน network เดียวกัน
 
-ข้อควรทราบ: `gpus: all` ต้องใช้ Ubuntu/NVIDIA Container Toolkit และ host ที่ติดตั้ง NVIDIA driver แล้ว การ `docker compose config` ตรวจได้เฉพาะ syntax/interpolation ไม่ได้ยืนยัน GPU inference
+ข้อควรทราบ: GPU (`deploy.resources.reservations.devices`) ต้องใช้ Ubuntu/NVIDIA Container Toolkit และ host ที่ติดตั้ง NVIDIA driver แล้ว การ `docker compose config` ตรวจได้เฉพาะ syntax/interpolation ไม่ได้ยืนยัน GPU inference
 
 ## Target server recommendation
 
