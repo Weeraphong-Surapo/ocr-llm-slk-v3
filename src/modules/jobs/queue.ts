@@ -38,10 +38,13 @@ export class HttpOcrClient implements OcrClient {
 
   async process(input: { file: File; prompt: string }): Promise<OcrResult> {
     const body = new FormData()
-    body.append('file', input.file)
+    body.append('file', input.file, input.file.name || 'upload')
     body.append('prompt', input.prompt)
     const response = await fetch(`${this.baseUrl}/ocr`, { method: 'POST', body })
-    if (!response.ok) throw new Error(`OCR engine returned HTTP ${response.status}`)
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => '')).slice(0, 300)
+      throw new Error(`OCR engine returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`)
+    }
     return await response.json() as OcrResult
   }
 }

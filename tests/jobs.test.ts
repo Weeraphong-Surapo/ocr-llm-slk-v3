@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { HttpOcrClient } from '../src/modules/jobs/queue.js'
 import { createApp } from '../src/app.js'
 import type { OcrClient } from '../src/modules/jobs/queue.js'
 
@@ -46,5 +47,19 @@ describe('OCR job API', () => {
     expect((await app.request('/api/v1/jobs/x', { headers: { authorization: 'Bearer secret' } })).status).not.toBe(401)
     expect((await app.request('/api/v1/jobs/x', { headers: { 'x-api-key': 'secret' } })).status).not.toBe(401)
     expect((await app.request('/health')).status).toBe(200)
+  })
+  it('forwards a filename to the OCR engine even when the upload has none', async () => {
+    let sent: FormData | undefined
+    const original = globalThis.fetch
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      sent = init?.body as FormData
+      return new Response(JSON.stringify({ pages: [], text: '' }), { status: 200 })
+    }) as typeof fetch
+    try {
+      await new HttpOcrClient('http://engine').process({ file: new File(['x'], '', { type: 'image/png' }), prompt: 'p' })
+    } finally {
+      globalThis.fetch = original
+    }
+    expect((sent!.get('file') as File).name).toBe('upload')
   })
 })
