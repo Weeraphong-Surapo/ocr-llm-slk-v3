@@ -1,0 +1,37 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    env_file: .env
+    ports: ["8787:8787"]
+    depends_on: [redis, postgres, ocr-engine]
+
+  ocr-engine:
+    build:
+      context: ./ocr-engine
+      dockerfile: ../docker/ocr-engine.Dockerfile
+    expose: ["8001"]
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+    # Enable only on the NVIDIA host with nvidia-container-toolkit installed.
+    # deploy.resources.reservations.devices:
+    #   - driver: nvidia
+    #     count: 1
+    #     capabilities: [gpu]
+
+  redis:
+    image: redis:7-alpine
+    expose: ["6379"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ocrllm
+      POSTGRES_USER: ocrllm
+      POSTGRES_PASSWORD: change-me
+    volumes: ["ocrllm-postgres:/var/lib/postgresql/data"]
+    expose: ["5432"]
+
+volumes:
+  ocrllm-postgres:

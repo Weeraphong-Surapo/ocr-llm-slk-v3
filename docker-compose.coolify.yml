@@ -1,0 +1,87 @@
+# Production/Coolify topology. Keep this file separate from docker-compose.yml.
+# Coolify should expose only the api service.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      API_KEY: ${API_KEY:?API_KEY is required}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-20}
+      OCR_ENGINE_URL: http://ocr-engine:8001
+      OCR_QUEUE_CONCURRENCY: ${OCR_QUEUE_CONCURRENCY:-1}
+      JOB_RETENTION_HOURS: ${JOB_RETENTION_HOURS:-24}
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+    expose:
+      - "3000"
+    depends_on:
+      ocr-engine:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ocr-engine:
+    build:
+      context: ./ocr-engine
+      dockerfile: ../docker/ocr-engine.coolify.Dockerfile
+    restart: unless-stopped
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+      OCR_DEVICE: gpu:0
+      OCR_MAX_PAGES: ${OCR_MAX_PAGES:-50}
+    expose:
+      - "8001"
+    gpus: all
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
+      interval: 20s
+      timeout: 8s
+      retries: 10
+      start_period: 60s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    expose:
+      - "5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:
