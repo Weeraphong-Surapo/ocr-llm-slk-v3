@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -71,16 +72,21 @@ class OcrEngine:
             # Pulling a 3 GB model can take minutes; do not block startup or health checks.
             threading.Thread(target=self._load_vlm, name='vlm-load', daemon=True).start()
 
-    def _load_vlm(self) -> None:
+    def _load_vlm(self, attempts: int = 20, wait_seconds: float = 15) -> None:
+        """Pull and warm up the VLM, retrying because Ollama may still be starting."""
         assert self.vlm is not None
-        try:
-            self.vlm_error = 'loading'
-            self.vlm.ensure_model()
-            self.vlm_ready = True
-            self.vlm_error = None
-        except Exception as exc:
-            self.vlm_ready = False
-            self.vlm_error = f'{type(exc).__name__}: {exc}'
+        for attempt in range(1, attempts + 1):
+            try:
+                self.vlm_error = 'loading'
+                self.vlm.ensure_model()
+                self.vlm_ready = True
+                self.vlm_error = None
+                return
+            except Exception as exc:
+                self.vlm_ready = False
+                self.vlm_error = f'{type(exc).__name__}: {exc} (attempt {attempt}/{attempts})'
+                if attempt < attempts:
+                    time.sleep(wait_seconds)
 
     @property
     def ready(self) -> bool:

@@ -6,7 +6,7 @@ import io
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Union
 
 import numpy as np
 from PIL import Image
@@ -56,13 +56,23 @@ def prepare_vlm_image(image: np.ndarray, min_long_side: int, max_long_side: int)
     return buffer.getvalue(), factor
 
 
+def parse_keep_alive(value: str) -> Union[int, str]:
+    """Ollama reads a JSON number as seconds (-1 = keep loaded forever) but a string
+    must carry a unit such as "30m"; a bare "-1" string is rejected with HTTP 400."""
+    value = value.strip()
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 class VlmClient:
     def __init__(self, url: str, model: str, timeout: float, num_predict: int, keep_alive: str) -> None:
         self.url = url.rstrip('/')
         self.model = model
         self.timeout = timeout
         self.num_predict = num_predict
-        self.keep_alive = keep_alive
+        self.keep_alive = parse_keep_alive(keep_alive)
 
     def _post(self, path: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         request = urllib.request.Request(

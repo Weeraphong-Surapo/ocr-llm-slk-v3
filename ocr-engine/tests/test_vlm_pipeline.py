@@ -4,7 +4,7 @@ import numpy as np
 
 from app.crosscheck import document_words, find_suspicious
 from app.engine import OcrEngine
-from app.vlm import prepare_vlm_image
+from app.vlm import VlmClient, parse_keep_alive, prepare_vlm_image
 
 # PaddleOCR output for the sample receipt (upscaled run), trimmed to the relevant lines.
 PADDLE = """ซึ่อลุกค้า
@@ -125,3 +125,33 @@ def test_engine_flags_when_vlm_not_ready():
     assert result['pages'][0]['source'] == 'paddleocr'
     assert result['review'][0]['reason'] == 'vlm_unavailable'
     assert result['engines']['vlm'] is None
+
+
+def test_keep_alive_is_sent_as_number_when_numeric():
+    assert parse_keep_alive('-1') == -1
+    assert parse_keep_alive(' 300 ') == 300
+    assert parse_keep_alive('30m') == '30m'
+    assert VlmClient('http://x', 'm', 1, 1, '-1').keep_alive == -1
+
+
+def test_vlm_load_retries_until_ollama_is_ready():
+    class Flaky:
+        model = 'm'
+        calls = 0
+        def ensure_model(self):
+            Flaky.calls += 1
+            if Flaky.calls < 3:
+                raise RuntimeError('not yet')
+    engine = OcrEngine(vlm=Flaky())
+    engine._load_vlm(attempts=5, wait_seconds=0)
+    assert engine.vlm_ready and engine.vlm_error is None and Flaky.calls == 3
+
+
+def test_vlm_load_reports_last_error_after_giving_up():
+    class Broken:
+        model = 'm'
+        def ensure_model(self):
+            raise RuntimeError('down')
+    engine = OcrEngine(vlm=Broken())
+    engine._load_vlm(attempts=2, wait_seconds=0)
+    assert not engine.vlm_ready and 'down' in engine.vlm_error and '2/2' in engine.vlm_error
