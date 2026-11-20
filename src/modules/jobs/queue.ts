@@ -1,7 +1,7 @@
-import type { Job, JobStore, OcrResult } from './store.js'
+import type { Job, JobStore, OcrResult, ResponseFormat } from './store.js'
 
 export interface OcrClient {
-  process(input: { file: File; prompt: string }): Promise<OcrResult>
+  process(input: { file: File; prompt: string; responseFormat?: ResponseFormat }): Promise<OcrResult>
 }
 
 export class InlineQueue {
@@ -21,7 +21,7 @@ export class InlineQueue {
       this.active += 1
       this.store.update(item.job.id, { status: 'processing' })
       try {
-        const result = await item.client.process({ file: item.file, prompt: item.job.prompt })
+        const result = await item.client.process({ file: item.file, prompt: item.job.prompt, responseFormat: item.job.response_format })
         this.store.update(item.job.id, { status: 'completed', result })
       } catch (error) {
         this.store.update(item.job.id, { status: 'failed', error: error instanceof Error ? error.message : 'OCR failed' })
@@ -36,10 +36,11 @@ export class InlineQueue {
 export class HttpOcrClient implements OcrClient {
   constructor(private readonly baseUrl: string) {}
 
-  async process(input: { file: File; prompt: string }): Promise<OcrResult> {
+  async process(input: { file: File; prompt: string; responseFormat?: ResponseFormat }): Promise<OcrResult> {
     const body = new FormData()
     body.append('file', input.file, input.file.name || 'upload')
     body.append('prompt', input.prompt)
+    body.append('response_format', input.responseFormat ?? 'auto')
     const response = await fetch(`${this.baseUrl}/ocr`, { method: 'POST', body })
     if (!response.ok) {
       const detail = (await response.text().catch(() => '')).slice(0, 300)

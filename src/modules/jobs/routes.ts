@@ -7,6 +7,7 @@ import { InlineQueue, type OcrClient } from './queue.js'
 import { MemoryJobStore, type JobStore } from './store.js'
 
 const promptSchema = z.string().trim().min(1).max(20_000)
+const responseFormatSchema = z.enum(['auto', 'json', 'text']).default('auto')
 
 export type JobRouteDeps = { store?: JobStore; ocrClient: OcrClient; concurrency?: number }
 
@@ -29,7 +30,9 @@ export function createJobRoutes(deps: JobRouteDeps) {
     // Use the type found in the file's bytes, e.g. a PDF uploaded as image/png is processed as a PDF.
     const name = file.name || 'upload'
     const typedFile = detectedType === file.type ? file : new File([file], name, { type: detectedType })
-    const job = store.create({ filename: name, mime_type: detectedType, prompt: parsedPrompt.data })
+    const parsedFormat = responseFormatSchema.safeParse(typeof body.response_format === 'string' && body.response_format ? body.response_format : undefined)
+    if (!parsedFormat.success) return c.json(failure('INVALID_RESPONSE_FORMAT', 'response_format must be auto, json or text'), 422)
+    const job = store.create({ filename: name, mime_type: detectedType, prompt: parsedPrompt.data, response_format: parsedFormat.data })
     queue.enqueue(job, typedFile, deps.ocrClient)
     return c.json(success({ job_id: job.id, status: job.status }), 202)
   })

@@ -28,6 +28,9 @@ def health() -> Dict[str, Any]:
         'vlm_model': engine.vlm.model if engine.vlm else None,
         'vlm_ready': engine.vlm_ready,
         'vlm_error': engine.vlm_error,
+        'llm_model': engine.llm.model if engine.llm else None,
+        'llm_ready': engine.llm_ready,
+        'llm_error': engine.llm_error,
     }
 
 
@@ -53,7 +56,9 @@ def gpu_health() -> Dict[str, Any]:
 
 
 @app.post('/ocr')
-async def ocr(file: UploadFile = File(...), prompt: str = Form(...)) -> Dict[str, Any]:
+async def ocr(file: UploadFile = File(...), prompt: str = Form(''), response_format: str = Form('auto')) -> Dict[str, Any]:
+    if response_format not in ('auto', 'json', 'text'):
+        raise HTTPException(status_code=422, detail='response_format must be auto, json or text')
     if not engine.ready:
         raise HTTPException(status_code=503, detail=engine.error or 'OCR model is not ready')
     data = await file.read()
@@ -62,7 +67,7 @@ async def ocr(file: UploadFile = File(...), prompt: str = Form(...)) -> Dict[str
         raise HTTPException(status_code=422, detail='Unsupported file type (expected PDF, PNG, JPEG or WebP content)')
     try:
         # Typhoon takes seconds per page; keep the event loop free so /health stays responsive.
-        return await run_in_threadpool(engine.process, data, content_type)
+        return await run_in_threadpool(engine.process, data, content_type, prompt, response_format)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

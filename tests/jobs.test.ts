@@ -83,4 +83,26 @@ describe('OCR job API', () => {
     body.append('prompt', 'อ่าน')
     expect((await app.request('/api/v1/jobs', { method: 'POST', body })).status).toBe(422)
   })
+  it('forwards response_format and rejects invalid values', async () => {
+    let seen: string | undefined
+    const capturing: OcrClient = { async process(input) { seen = input.responseFormat; return { pages: [], text: '' } } }
+    const app = createApp(capturing, { apiKey: undefined })
+    const send = async (format?: string) => {
+      const body = new FormData()
+      body.append('file', new File(['%PDF-1.7 x'], 'a.pdf', { type: 'application/pdf' }))
+      body.append('prompt', 'ช่วยเป็น json')
+      if (format !== undefined) body.append('response_format', format)
+      return app.request('/api/v1/jobs', { method: 'POST', body })
+    }
+    expect((await send('xml')).status).toBe(422)
+    const ok = await send('json')
+    expect(ok.status).toBe(202)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(seen).toBe('json')
+    const id = (await ok.json()).data.job_id
+    expect((await (await app.request(`/api/v1/jobs/${id}`)).json()).data.response_format).toBe('json')
+    expect((await send()).status).toBe(202)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(seen).toBe('auto')
+  })
 })

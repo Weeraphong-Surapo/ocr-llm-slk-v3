@@ -57,6 +57,12 @@ Each page is read by two models at the same time:
 
 `review` is a list of things to check by hand, not a verdict: it also contains words Typhoon read correctly but PaddleOCR misread. If Typhoon is not ready or fails, the page falls back to PaddleOCR text (`source: "paddleocr"`) and `review` says why. On first start the OCR engine pulls the model (about 3.2 GB) in the background; `/health` shows `vlm_ready`. Images are resized for Typhoon so the long side is 1300–1800 px (`VLM_MIN_LONG_SIDE`, `VLM_MAX_LONG_SIDE`). Measure accuracy on your own documents with `eval/` before relying on it.
 
+## Answering the prompt
+
+`prompt` (and optional `response_format`: `auto` | `json` | `text`) is answered by a Thai text LLM, **Typhoon 2.5 Qwen3 4B** (`scb10x/typhoon2.5-qwen3-4b`), from the OCR text only; the result is in `result.answer`. `auto` returns JSON when the prompt mentions "json". The LLM is told to copy values exactly and use `null` for anything not in the document, at temperature 0.
+
+Every JSON value is then checked: `not_in_document` means the value does not appear in the OCR text (possibly invented), `uncertain_ocr` means it contains a word the OCR cross-check flagged. A value without a review entry is still only as correct as the OCR text it was copied from.
+
 ## Coolify deployment
 
 ใช้ไฟล์แยกสำหรับ production:

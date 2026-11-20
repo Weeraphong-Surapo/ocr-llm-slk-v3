@@ -18,11 +18,24 @@ export type OcrPage = {
   review?: ReviewItem[]
 }
 
+export type ResponseFormat = 'auto' | 'json' | 'text'
+
+export type AnswerReviewItem = { path: string; value: unknown; status: 'not_in_document' | 'uncertain_ocr'; flagged?: string[] }
+
+export type Answer = {
+  format: 'json' | 'text'
+  content: unknown
+  review: AnswerReviewItem[]
+  model: string | null
+  error: string | null
+}
+
 export type OcrResult = {
   pages: OcrPage[]
   text: string
   review?: ReviewItem[]
-  engines?: { ocr: string; vlm: string | null }
+  answer?: Answer
+  engines?: { ocr: string; vlm: string | null; llm?: string | null }
 }
 
 export type Job = {
@@ -31,6 +44,7 @@ export type Job = {
   filename: string
   mime_type: string
   prompt: string
+  response_format: ResponseFormat
   created_at: string
   updated_at: string
   result?: OcrResult
@@ -38,7 +52,7 @@ export type Job = {
 }
 
 export interface JobStore {
-  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt'>): Job
+  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt' | 'response_format'>): Job
   get(id: string): Job | undefined
   update(id: string, patch: Partial<Job>): Job | undefined
 }
@@ -46,7 +60,7 @@ export interface JobStore {
 export class MemoryJobStore implements JobStore {
   private readonly jobs = new Map<string, Job>()
 
-  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt'>): Job {
+  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt' | 'response_format'>): Job {
     const now = new Date().toISOString()
     const job: Job = { id: crypto.randomUUID(), status: 'queued', ...input, created_at: now, updated_at: now }
     this.jobs.set(job.id, job)

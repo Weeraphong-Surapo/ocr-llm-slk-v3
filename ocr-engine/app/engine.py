@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
+from .answer import AnswerClient, build_answer
 from .crosscheck import find_missing, find_suspicious
 from .ocr_pipeline import decode_image, normalize_result, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
@@ -18,7 +19,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 class OcrEngine:
-    def __init__(self, vlm: Optional[VlmClient] = None) -> None:
+    def __init__(self, vlm: Optional[VlmClient] = None, llm: Optional[AnswerClient] = None) -> None:
         self.pipeline: Any = None
         self.error: Optional[str] = None
         self.device = os.getenv('OCR_DEVICE', 'gpu:0')
@@ -47,6 +48,20 @@ class OcrEngine:
         self.vlm_ready = False
         self.vlm_error: Optional[str] = None if self.vlm else 'VLM disabled'
         self._vlm_loaded = threading.Event()
+        # Text LLM that answers the user's prompt from the OCR text.
+        self.llm = llm
+        if self.llm is None and _env_bool('LLM_ENABLED', True):
+            self.llm = AnswerClient(
+                url=os.getenv('OLLAMA_URL', 'http://ollama:11434'),
+                model=os.getenv('LLM_MODEL', 'scb10x/typhoon2.5-qwen3-4b'),
+                timeout=float(os.getenv('LLM_TIMEOUT_SECONDS', '120')),
+                num_ctx=int(os.getenv('LLM_NUM_CTX', '8192')),
+                num_predict=int(os.getenv('LLM_NUM_PREDICT', '4096')),
+                keep_alive=os.getenv('VLM_KEEP_ALIVE', '-1'),
+            )
+        self.llm_ready = False
+        self.llm_error: Optional[str] = None if self.llm else 'LLM disabled'
+        self._llm_loaded = threading.Event()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='vlm')
 
     def load(self) -> None:
@@ -73,9 +88,31 @@ class OcrEngine:
         except Exception as exc:
             self.pipeline = None
             self.error = f'{type(exc).__name__}: {exc}'
+        if self.vlm or self.llm:
+            # Pulling multi-GB models can take minutes; do not block startup or health checks.
+            threading.Thread(target=self._load_models, name='model-load', daemon=True).start()
+
+    def _load_models(self) -> None:
         if self.vlm:
-            # Pulling a 3 GB model can take minutes; do not block startup or health checks.
-            threading.Thread(target=self._load_vlm, name='vlm-load', daemon=True).start()
+            self._load_vlm()
+        if self.llm:
+            self._load_llm()
+
+    def _load_llm(self, attempts: int = 20, wait_seconds: float = 15) -> None:
+        assert self.llm is not None
+        for attempt in range(1, attempts + 1):
+            try:
+                self.llm_error = 'loading'
+                self.llm.ensure_model()
+                self.llm_ready = True
+                self.llm_error = None
+                break
+            except Exception as exc:
+                self.llm_ready = False
+                self.llm_error = f'{type(exc).__name__}: {exc} (attempt {attempt}/{attempts})'
+                if attempt < attempts:
+                    time.sleep(wait_seconds)
+        self._llm_loaded.set()
 
     def _load_vlm(self, attempts: int = 20, wait_seconds: float = 15) -> None:
         """Pull and warm up the VLM, retrying because Ollama may still be starting."""
@@ -116,7 +153,7 @@ class OcrEngine:
                 lines.append(line)
         return lines
 
-    def process(self, data: bytes, content_type: str) -> Dict[str, Any]:
+    def process(self, data: bytes, content_type: str, prompt: str = '', response_format: str = 'auto') -> Dict[str, Any]:
         if not self.pipeline:
             raise RuntimeError(self.error or 'OCR model is not ready')
         if self.vlm is not None and not self.vlm_ready and not self._vlm_loaded.is_set():
@@ -159,9 +196,17 @@ class OcrEngine:
                 'lines': lines,
                 'review': page_review,
             })
-        return {
+        text = '\n\n'.join(page['text'] for page in pages if page['text'])
+        result: Dict[str, Any] = {
             'pages': pages,
-            'text': '\n\n'.join(page['text'] for page in pages if page['text']),
+            'text': text,
             'review': review,
-            'engines': {'ocr': PADDLE_MODEL, 'vlm': self.vlm.model if use_vlm and self.vlm else None},
+            'engines': {'ocr': PADDLE_MODEL, 'vlm': self.vlm.model if use_vlm and self.vlm else None,
+                        'llm': self.llm.model if self.llm else None},
         }
+        if prompt.strip() and self.llm is not None:
+            if not self.llm_ready and not self._llm_loaded.is_set():
+                self._llm_loaded.wait(self.vlm_wait_seconds)
+            result['answer'] = build_answer(self.llm, self.llm_ready, self.llm_error, prompt.strip(),
+                                            response_format, text, review)
+        return result
