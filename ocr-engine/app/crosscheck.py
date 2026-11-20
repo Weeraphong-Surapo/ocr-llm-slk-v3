@@ -56,12 +56,43 @@ def _best_similarity(word: str, haystack: str) -> float:
     return best
 
 
+_CODE_TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9#/\-.]*')
+
+
+def _digits(code: str) -> str:
+    # OCR models swap letter O and digit 0 constantly; treat them as the same digit.
+    return ''.join(ch for ch in code.replace('O', '0').replace('o', '0') if ch.isdigit())
+
+
+def _code_confirmed(code: str, paddle_codes: List[str]) -> bool:
+    """A product code like OF50016 is confirmed when the most similar PaddleOCR code has the same digits.
+
+    PaddleOCR often misreads the letters (OR50016, 0F50024) but rarely the digits, so the digits
+    carry the check; an exact letter match is not required.
+    """
+    if code in paddle_codes:
+        return True
+    best, best_ratio = None, 0.0
+    for candidate in paddle_codes:
+        ratio = SequenceMatcher(None, code, candidate, autojunk=False).ratio()
+        if ratio > best_ratio:
+            best, best_ratio = candidate, ratio
+    return best is not None and best_ratio >= 0.6 and _digits(best) == _digits(code)
+
+
 def find_suspicious(vlm_markdown: str, paddle_text: str, min_similarity: float = 0.6) -> List[Dict[str, object]]:
     haystack = _compact(paddle_text)
+    paddle_codes = _CODE_TOKEN.findall(paddle_text)
     flags: List[Dict[str, object]] = []
     for word in document_words(vlm_markdown):
-        if any(ch.isdigit() for ch in word) or '@' in word:
+        has_digit = any(ch.isdigit() for ch in word)
+        if '@' in word or (has_digit and not any(ch.isalpha() for ch in word)):
+            # Emails and pure numbers (amounts, tax IDs, dates) must match exactly.
             if word not in haystack:
+                flags.append({'text': word, 'reason': 'number_or_email_not_confirmed', 'similarity': None})
+            continue
+        if has_digit:
+            if not _code_confirmed(word, paddle_codes):
                 flags.append({'text': word, 'reason': 'number_or_email_not_confirmed', 'similarity': None})
             continue
         similarity = _best_similarity(word, haystack)

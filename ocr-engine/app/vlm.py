@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import io
 import json
 import urllib.error
@@ -67,12 +68,16 @@ def parse_keep_alive(value: str) -> Union[int, str]:
 
 
 class VlmClient:
-    def __init__(self, url: str, model: str, timeout: float, num_predict: int, keep_alive: str) -> None:
+    def __init__(self, url: str, model: str, timeout: float, num_predict: int, keep_alive: str,
+                 num_ctx: int = 12288) -> None:
         self.url = url.rstrip('/')
         self.model = model
         self.timeout = timeout
         self.num_predict = num_predict
         self.keep_alive = parse_keep_alive(keep_alive)
+        # Image tokens, prompt and output share this window. Ollama's default (4096) is used up
+        # by a ~1800 px page (~2900 image tokens) and cuts the answer off.
+        self.num_ctx = num_ctx
 
     def _post(self, path: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         request = urllib.request.Request(
@@ -101,9 +106,10 @@ class VlmClient:
             'images': [base64.b64encode(png).decode()],
             'stream': False,
             'keep_alive': self.keep_alive,
-            'options': {**TYPHOON_15_OPTIONS, 'num_predict': self.num_predict},
+            'options': {**TYPHOON_15_OPTIONS, 'num_predict': self.num_predict, 'num_ctx': self.num_ctx},
         }, timeout=self.timeout)
-        text = str(data.get('response', '')).strip()
+        # Typhoon escapes HTML entities in plain text (e.g. MOVING&amp;SERVICE).
+        text = html.unescape(str(data.get('response', ''))).strip()
         if not text:
             raise RuntimeError('Typhoon OCR returned empty output')
         return text, str(data.get('done_reason', ''))

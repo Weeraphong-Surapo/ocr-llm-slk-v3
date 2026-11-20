@@ -188,3 +188,25 @@ def test_job_waits_for_vlm_that_is_still_loading():
     result = engine.process(png_bytes(), 'image/png')
     assert result['pages'][0]['source'] == 'vlm'
     assert 0.1 < time.time() - started < 3
+
+
+def test_product_codes_are_checked_by_digits_not_letters():
+    paddle = 'ขายซาก OR50016 ทาโพลีน\nขายชาก 0F50024สว่าน\nขายซาก OP50026 บล้อคลม\nชายซาก OF50010 ผ้าใบ\nVICTOR/VY-2221'
+    vlm = 'ขายซาก OF50016 ขายซาก OF50024 ขายซาก OF50026 ขายซาก OFS0010 VICTOR#VY-222n'
+    flags = {f['text'] for f in find_suspicious(vlm, paddle)}
+    assert 'OF50016' not in flags and 'OF50024' not in flags and 'OF50026' not in flags
+    assert 'OFS0010' in flags  # digits 0010 vs 50010: a real misread
+    assert 'VY-222n' in flags  # digits differ from PaddleOCR (2221); ambiguous, so checked by hand
+
+
+def test_vlm_request_sets_context_window_and_unescapes_html():
+    import json as _json
+    sent = {}
+    client = VlmClient('http://x', 'm', 1, 100, '-1', num_ctx=12288)
+    def fake_post(path, payload, timeout):
+        sent.update(payload)
+        return {'response': 'BEST MOVING&amp;SERVICE CO.,LTD.', 'done_reason': 'stop'}
+    client._post = fake_post
+    text, reason = client.read_page(b'png')
+    assert sent['options']['num_ctx'] == 12288 and sent['options']['num_predict'] == 100
+    assert text == 'BEST MOVING&SERVICE CO.,LTD.' and reason == 'stop'

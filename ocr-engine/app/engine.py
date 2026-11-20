@@ -40,7 +40,8 @@ class OcrEngine:
                 url=os.getenv('OLLAMA_URL', 'http://ollama:11434'),
                 model=os.getenv('VLM_MODEL', 'scb10x/typhoon-ocr1.5-3b'),
                 timeout=float(os.getenv('VLM_TIMEOUT_SECONDS', '120')),
-                num_predict=int(os.getenv('VLM_NUM_PREDICT', '4096')),
+                num_predict=int(os.getenv('VLM_NUM_PREDICT', '6144')),
+                num_ctx=int(os.getenv('VLM_NUM_CTX', '12288')),
                 keep_alive=os.getenv('VLM_KEEP_ALIVE', '-1'),
             )
         self.vlm_ready = False
