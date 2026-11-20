@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from .ocr_pipeline import decode_image, normalize_result, render_pdf_pages
+from .ocr_pipeline import decode_image, normalize_result, render_pdf_pages, scale_bbox, upscale_small_image
 
 
 class OcrEngine:
@@ -12,6 +12,9 @@ class OcrEngine:
         self.error: Optional[str] = None
         self.device = os.getenv('OCR_DEVICE', 'gpu:0')
         self.max_pages = int(os.getenv('OCR_MAX_PAGES', '50'))
+        # Images whose long side is below this are enlarged before OCR (0 disables).
+        self.upscale_min_long_side = int(os.getenv('OCR_UPSCALE_MIN_LONG_SIDE', '2000'))
+        self.upscale_max_factor = float(os.getenv('OCR_UPSCALE_MAX_FACTOR', '4'))
 
     def load(self) -> None:
         try:
@@ -46,12 +49,18 @@ class OcrEngine:
         if not self.pipeline:
             raise RuntimeError(self.error or 'OCR model is not ready')
         pages: List[Dict[str, Any]] = []
-        inputs = render_pdf_pages(data, self.max_pages) if content_type == 'application/pdf' else [decode_image(data)]
+        is_pdf = content_type == 'application/pdf'
+        inputs = render_pdf_pages(data, self.max_pages) if is_pdf else [decode_image(data)]
         for page_number, image in enumerate(inputs, start=1):
+            factor = 1.0
+            if not is_pdf:
+                image, factor = upscale_small_image(image, self.upscale_min_long_side, self.upscale_max_factor)
             predictions = self.pipeline.predict(image)
             page_lines = []
             for prediction in predictions:
-                page_lines.extend(normalize_result(prediction)['lines'])
+                for line in normalize_result(prediction)['lines']:
+                    line['bbox'] = scale_bbox(line['bbox'], factor)
+                    page_lines.append(line)
             pages.append({
                 'page_number': page_number,
                 'text': '\n'.join(line['text'] for line in page_lines if line['text']),

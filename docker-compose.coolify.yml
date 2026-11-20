@@ -41,6 +41,8 @@ services:
       CUDA_VISIBLE_DEVICES: "0"
       OCR_DEVICE: gpu:0
       OCR_MAX_PAGES: ${OCR_MAX_PAGES:-50}
+      OCR_UPSCALE_MIN_LONG_SIDE: ${OCR_UPSCALE_MIN_LONG_SIDE:-2000}
+      OCR_UPSCALE_MAX_FACTOR: ${OCR_UPSCALE_MAX_FACTOR:-4}
     expose:
       - "8001"
     deploy:

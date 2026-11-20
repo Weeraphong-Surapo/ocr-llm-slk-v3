@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 import fitz
 import numpy as np
@@ -27,6 +27,26 @@ def render_pdf_pages(data: bytes, max_pages: int) -> Iterable[np.ndarray]:
 def decode_image(data: bytes) -> np.ndarray:
     with Image.open(io.BytesIO(data)) as image:
         return np.asarray(image.convert('RGB'))
+def upscale_small_image(image: np.ndarray, min_long_side: int, max_factor: float) -> Tuple[np.ndarray, float]:
+    """Enlarge low-resolution images so small Thai glyphs (vowels, tone marks) stay legible.
+
+    Returns the image to run OCR on and the factor applied (1.0 means unchanged).
+    """
+    height, width = image.shape[:2]
+    long_side = max(height, width)
+    if min_long_side <= 0 or long_side == 0 or long_side >= min_long_side:
+        return image, 1.0
+    factor = min(min_long_side / long_side, max_factor)
+    if factor <= 1.0:
+        return image, 1.0
+    size = (round(width * factor), round(height * factor))
+    resized = Image.fromarray(image).resize(size, Image.Resampling.LANCZOS)
+    return np.asarray(resized), factor
+def scale_bbox(bbox: Any, factor: float) -> Any:
+    """Map a polygon from the upscaled image back to original-image pixels."""
+    if bbox is None or factor == 1.0:
+        return bbox
+    return [[round(float(x) / factor), round(float(y) / factor)] for x, y in bbox]
 
 
 def result_to_dict(result: Any) -> Dict[str, Any]:
@@ -62,6 +82,6 @@ def normalize_result(result: Any) -> Dict[str, Any]:
         lines.append({
             'text': str(text),
             'confidence': float(raw_score) if raw_score is not None else None,
-            'bbox': raw_box,
+            'bbox': raw_box.tolist() if hasattr(raw_box, 'tolist') else raw_box,
         })
     return {'text': '\n'.join(line['text'] for line in lines if line['text']), 'lines': lines}

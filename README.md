@@ -44,6 +44,7 @@ The OCR engine now loads this model at startup:
 - `PP-OCRv5_mobile_det` + `th_PP-OCRv5_mobile_rec` (Thai)
 - `OCR_DEVICE=gpu:0` in Coolify
 - PDF pages rendered one at a time with PyMuPDF
+- Images whose long side is under `OCR_UPSCALE_MIN_LONG_SIDE` (default 2000 px) are enlarged up to `OCR_UPSCALE_MAX_FACTOR` (default 4x) before OCR so small Thai glyphs stay legible. `bbox` values are always returned in original-image pixels. Set `OCR_UPSCALE_MIN_LONG_SIDE=0` to disable.
 
 If the model cannot load, `/health` reports `model_ready: false` and `/ocr` returns HTTP 503; it never fabricates OCR output. GPU/model startup still requires verification on the actual Ubuntu/NVIDIA host.
 
