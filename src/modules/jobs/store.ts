@@ -20,11 +20,18 @@ export type OcrPage = {
 
 export type ResponseFormat = 'auto' | 'json' | 'text'
 
-export type AnswerReviewItem = { path: string; value: unknown; status: 'not_in_document' | 'uncertain_ocr'; flagged?: string[] }
+export type AnswerReviewItem = {
+  path: string
+  value: unknown
+  status: 'not_in_document' | 'uncertain_ocr' | 'label_mismatch' | 'label_not_found' | 'label_missing'
+  flagged?: string[]
+  label?: string | null
+}
 
 export type Answer = {
   format: 'json' | 'text'
   content: unknown
+  sources?: Record<string, string | null> | null
   review: AnswerReviewItem[]
   model: string | null
   error: string | null

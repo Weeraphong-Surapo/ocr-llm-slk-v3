@@ -61,7 +61,7 @@ Each page is read by two models at the same time:
 
 `prompt` (and optional `response_format`: `auto` | `json` | `text`) is answered by a Thai text LLM, **Typhoon 2.5 Qwen3 4B** (`scb10x/typhoon2.5-qwen3-4b`), from the OCR text only; the result is in `result.answer`. `auto` returns JSON when the prompt mentions "json". The LLM is told to copy values exactly and use `null` for anything not in the document, at temperature 0.
 
-Every JSON value is then checked: `not_in_document` means the value does not appear in the OCR text (possibly invented), `uncertain_ocr` means it contains a word the OCR cross-check flagged. A value without a review entry is still only as correct as the OCR text it was copied from.
+Every JSON value is then checked: `not_in_document` means the value does not appear in the OCR text (possibly invented), `uncertain_ocr` means it contains a word the OCR cross-check flagged. For JSON answers the LLM also reports, per top-level field, the document label it read the value from (`answer.sources`). If the value is not within two lines of that label it is marked `label_mismatch` (typically a value borrowed from a neighbouring field, such as a tax ID returned as an empty P/O number); `label_not_found` / `label_missing` mean the cited label is not in the document or was not given. Table items are not label-checked. A value without a review entry is still only as correct as the OCR text it was copied from.
 
 ## Coolify deployment
 

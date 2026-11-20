@@ -108,3 +108,56 @@ def test_engine_adds_answer_when_prompt_given():
     assert result['engines']['llm'] == 'fake-llm'
     no_prompt = engine.process(png_bytes(), 'image/png')
     assert 'answer' not in no_prompt
+
+
+# Header of the real Typhoon output for the BEST MOVING tax invoice; the P/O line is empty.
+INVOICE_HEADER = """นามผู้ซื้อ คุณณัฐธยาน์ พวงคำ SOLD TO
+บ้านเลขที่ 133 ถนนเชียงใหม่
+ที่อยู่ ADDRESSแขวงคลองสาน เขตคลองสาน กรุงเทพมหานคร 10600
+
+เลขประจำตัวผู้เสียภาษีอากร 3 1018 00812 46 2
+
+เลขที่ IV690229 NO.
+วันที่ 04/09/2569 DATE
+เงื่อนไขการชำระเงิน cash TERMS OF PAYMENT
+เลขที่ใบสั่งซื้อ P/O NO.
+
+<table><tr><td>1</td><td>ขายซาก AS5912-0003</td><td>1 ชิ้น</td></tr><tr><td>2</td><td>ขายซาก OFS0010</td><td>37.38</td></tr></table>
+จำนวนเงินรวมทั้งสิ้น GRAND TOTAL 519.98"""
+
+
+def test_value_taken_from_another_label_is_flagged():
+    from app.answer import check_sources
+    data = {'invoice_no': 'IV690229', 'buyer_phone': None, 'po_number': '3 1018 00812 46 2', 'grand_total': '519.98'}
+    sources = {'invoice_no': 'เลขที่', 'buyer_phone': None, 'po_number': 'เลขที่ใบสั่งซื้อ P/O NO.',
+               'grand_total': 'จำนวนเงินรวมทั้งสิ้น GRAND TOTAL'}
+    results = {r['path']: r for r in check_sources(data, sources, INVOICE_HEADER)}
+    assert results['$.po_number']['status'] == 'label_mismatch'
+    assert set(results) == {'$.po_number'}
+
+
+def test_invented_label_and_missing_label_are_flagged():
+    from app.answer import check_sources
+    data = {'invoice_no': 'IV690229', 'buyer_tax_id': '3 1018 00812 46 2'}
+    results = {r['path']: r['status'] for r in check_sources(data, {'invoice_no': 'Order reference code'}, INVOICE_HEADER)}
+    assert results == {'$.invoice_no': 'label_not_found', '$.buyer_tax_id': 'label_missing'}
+
+
+def test_build_answer_unwraps_data_and_checks_sources():
+    content = json.dumps({'data': {'invoice_no': 'IV690229', 'po_number': '3 1018 00812 46 2'},
+                          'sources': {'invoice_no': 'เลขที่', 'po_number': 'เลขที่ใบสั่งซื้อ P/O NO.'}}, ensure_ascii=False)
+    result = build_answer(FakeLlm(content), True, None, 'ขอข้อมูลเป็น json: invoice_no, po_number', 'auto', INVOICE_HEADER, [])
+    assert result['content'] == {'invoice_no': 'IV690229', 'po_number': '3 1018 00812 46 2'}
+    assert result['sources']['po_number'] == 'เลขที่ใบสั่งซื้อ P/O NO.'
+    assert [(r['path'], r['status']) for r in result['review']] == [('$.po_number', 'label_mismatch')]
+
+
+def test_build_answer_accepts_plain_json_without_sources_wrapper():
+    result = build_answer(FakeLlm('{"invoice_no": "IV690229"}'), True, None, 'json', 'auto', INVOICE_HEADER, [])
+    assert result['content'] == {'invoice_no': 'IV690229'} and result['sources'] is None and result['review'] == []
+
+
+def test_system_prompt_forbids_borrowing_values_from_other_labels():
+    from app.answer import JSON_INSTRUCTION, SYSTEM_PROMPT
+    assert 'ห้ามนำค่าที่อยู่ใกล้ๆ ของป้ายอื่นมาใส่แทน' in SYSTEM_PROMPT
+    assert '"sources"' in JSON_INSTRUCTION
