@@ -93,6 +93,7 @@ def make_engine(vlm, ready=True):
     engine = OcrEngine(vlm=vlm)
     engine.pipeline = FakePipeline()
     engine.vlm_ready = ready
+    engine.vlm_wait_seconds = 0
     return engine
 
 
@@ -172,3 +173,18 @@ def test_lines_skipped_by_the_vlm_are_reported():
     missing = find_missing(vlm, paddle_lines)
     assert [m['text'] for m in missing] == ['88/8 หนู่ที่ 3 ต่านสบางแน่นาง จาเกอ', 'บางใหญ่จังหวัอนนกบุรี11140']
     assert missing[0]['bbox'] == [[75, 186]] and missing[0]['reason'] == 'missing_in_vlm'
+
+
+def test_job_waits_for_vlm_that_is_still_loading():
+    import threading
+    engine = make_engine(FakeVlm('คุณเจนจิรา 098-765-4310'), ready=False)
+    engine.vlm_wait_seconds = 5
+    def finish_loading():
+        time.sleep(0.2)
+        engine.vlm_ready = True
+        engine._vlm_loaded.set()
+    threading.Thread(target=finish_loading).start()
+    started = time.time()
+    result = engine.process(png_bytes(), 'image/png')
+    assert result['pages'][0]['source'] == 'vlm'
+    assert 0.1 < time.time() - started < 3

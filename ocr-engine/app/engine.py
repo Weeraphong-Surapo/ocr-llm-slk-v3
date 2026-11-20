@@ -32,6 +32,8 @@ class OcrEngine:
         self.vlm_max_long_side = int(os.getenv('VLM_MAX_LONG_SIDE', '1800'))
         self.review_min_similarity = float(os.getenv('REVIEW_MIN_SIMILARITY', '0.6'))
         self.missing_max_similarity = float(os.getenv('MISSING_MAX_SIMILARITY', '0.4'))
+        # While the VLM is still loading (e.g. right after a deploy), jobs wait this long before falling back.
+        self.vlm_wait_seconds = float(os.getenv('VLM_WAIT_SECONDS', '120'))
         self.vlm = vlm
         if self.vlm is None and self.vlm_enabled:
             self.vlm = VlmClient(
@@ -43,6 +45,7 @@ class OcrEngine:
             )
         self.vlm_ready = False
         self.vlm_error: Optional[str] = None if self.vlm else 'VLM disabled'
+        self._vlm_loaded = threading.Event()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='vlm')
 
     def load(self) -> None:
@@ -82,12 +85,14 @@ class OcrEngine:
                 self.vlm.ensure_model()
                 self.vlm_ready = True
                 self.vlm_error = None
+                self._vlm_loaded.set()
                 return
             except Exception as exc:
                 self.vlm_ready = False
                 self.vlm_error = f'{type(exc).__name__}: {exc} (attempt {attempt}/{attempts})'
                 if attempt < attempts:
                     time.sleep(wait_seconds)
+        self._vlm_loaded.set()  # gave up: stop making jobs wait
 
     @property
     def ready(self) -> bool:
@@ -113,6 +118,8 @@ class OcrEngine:
     def process(self, data: bytes, content_type: str) -> Dict[str, Any]:
         if not self.pipeline:
             raise RuntimeError(self.error or 'OCR model is not ready')
+        if self.vlm is not None and not self.vlm_ready and not self._vlm_loaded.is_set():
+            self._vlm_loaded.wait(self.vlm_wait_seconds)
         use_vlm = self.vlm is not None and self.vlm_ready
         pages: List[Dict[str, Any]] = []
         review: List[Dict[str, Any]] = []
