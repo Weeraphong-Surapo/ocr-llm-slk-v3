@@ -43,7 +43,13 @@ services:
       OCR_MAX_PAGES: ${OCR_MAX_PAGES:-50}
     expose:
       - "8001"
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
       interval: 20s

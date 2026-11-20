@@ -15,6 +15,14 @@ class OcrEngine:
 
     def load(self) -> None:
         try:
+            if self.device.startswith('gpu'):
+                import paddle
+                if not paddle.is_compiled_with_cuda() or paddle.device.cuda.device_count() == 0:
+                    raise RuntimeError(
+                        f'OCR_DEVICE={self.device} but Paddle sees no CUDA GPU '
+                        f'(compiled_with_cuda={paddle.is_compiled_with_cuda()}, '
+                        f'device_count={paddle.device.cuda.device_count()}); refusing to fall back to CPU'
+                    )
             from paddleocr import PaddleOCR
             self.pipeline = PaddleOCR(
                 text_detection_model_name='PP-OCRv5_mobile_det',
