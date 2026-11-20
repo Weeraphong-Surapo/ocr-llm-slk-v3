@@ -3,8 +3,9 @@ export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed'
 export type ReviewItem = {
   page_number: number
   text: string | null
-  reason: 'low_similarity' | 'number_or_email_not_confirmed' | 'vlm_failed' | 'vlm_unavailable' | 'vlm_output_truncated'
+  reason: 'low_similarity' | 'number_or_email_not_confirmed' | 'missing_in_vlm' | 'vlm_failed' | 'vlm_unavailable' | 'vlm_output_truncated'
   similarity: number | null
+  bbox?: number[][] | null
   detail?: string | null
 }
 

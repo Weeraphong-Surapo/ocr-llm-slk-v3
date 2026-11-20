@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from app.crosscheck import document_words, find_suspicious
+from app.crosscheck import document_words, find_missing, find_suspicious
 from app.engine import OcrEngine
 from app.vlm import VlmClient, parse_keep_alive, prepare_vlm_image
 
@@ -155,3 +155,20 @@ def test_vlm_load_reports_last_error_after_giving_up():
     engine = OcrEngine(vlm=Broken())
     engine._load_vlm(attempts=2, wait_seconds=0)
     assert not engine.vlm_ready and 'down' in engine.vlm_error and '2/2' in engine.vlm_error
+
+
+def test_lines_skipped_by_the_vlm_are_reported():
+    # Real run: Typhoon dropped the issuer address; PaddleOCR saw it (noisily).
+    vlm = open(__file__.replace('test_vlm_pipeline.py', 'data/typhoon_dropped_address.md'), encoding='utf-8').read()
+    paddle_lines = [
+        {'text': 'บริษัก ยืมเอเจนธีแอนด์ อิจิกอล จากัด', 'confidence': 0.91, 'bbox': None},
+        {'text': 'ฮ้พงซัง', 'confidence': 0.65, 'bbox': None},
+        {'text': '88/8 หนู่ที่ 3 ต่านสบางแน่นาง จาเกอ', 'confidence': 0.86, 'bbox': [[75, 186]]},
+        {'text': 'บางใหญ่จังหวัอนนกบุรี11140', 'confidence': 0.87, 'bbox': None},
+        {'text': 'บัตรo0ิ0/ นัดรครอัก', 'confidence': 0.74, 'bbox': None},
+        {'text': ', รันสาระ', 'confidence': 0.72, 'bbox': None},
+        {'text': 'ร', 'confidence': 0.4, 'bbox': None},
+    ]
+    missing = find_missing(vlm, paddle_lines)
+    assert [m['text'] for m in missing] == ['88/8 หนู่ที่ 3 ต่านสบางแน่นาง จาเกอ', 'บางใหญ่จังหวัอนนกบุรี11140']
+    assert missing[0]['bbox'] == [[75, 186]] and missing[0]['reason'] == 'missing_in_vlm'

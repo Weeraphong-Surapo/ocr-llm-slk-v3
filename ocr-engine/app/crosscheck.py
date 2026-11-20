@@ -68,3 +68,29 @@ def find_suspicious(vlm_markdown: str, paddle_text: str, min_similarity: float =
         if similarity < min_similarity:
             flags.append({'text': word, 'reason': 'low_similarity', 'similarity': round(similarity, 2)})
     return flags
+
+
+def _plain_vlm_text(markdown: str) -> str:
+    return _compact(_MARKDOWN.sub(' ', _TAG.sub(' ', _PAGE_NO.sub(' ', _FIGURE.sub(' ', markdown)))))
+
+
+def find_missing(vlm_markdown: str, paddle_lines: List[Dict[str, object]],
+                 max_similarity: float = 0.4, min_confidence: float = 0.6, min_length: int = 6) -> List[Dict[str, object]]:
+    """PaddleOCR lines with nothing similar in the VLM output: text the VLM probably skipped.
+
+    PaddleOCR's Thai is noisy, so the threshold is low; only lines that barely
+    resemble anything in the VLM text are reported.
+    """
+    haystack = _plain_vlm_text(vlm_markdown)
+    flags: List[Dict[str, object]] = []
+    for line in paddle_lines:
+        text = str(line.get('text') or '')
+        confidence = line.get('confidence')
+        compact = _compact(text)
+        if len(compact) < min_length or (confidence is not None and float(confidence) < min_confidence):
+            continue
+        similarity = _best_similarity(compact, haystack)
+        if similarity < max_similarity:
+            flags.append({'text': text, 'reason': 'missing_in_vlm', 'similarity': round(similarity, 2),
+                          'bbox': line.get('bbox')})
+    return flags

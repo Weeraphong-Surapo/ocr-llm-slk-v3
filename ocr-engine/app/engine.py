@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
-from .crosscheck import find_suspicious
+from .crosscheck import find_missing, find_suspicious
 from .ocr_pipeline import decode_image, normalize_result, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
 
@@ -31,6 +31,7 @@ class OcrEngine:
         self.vlm_min_long_side = int(os.getenv('VLM_MIN_LONG_SIDE', '1300'))
         self.vlm_max_long_side = int(os.getenv('VLM_MAX_LONG_SIDE', '1800'))
         self.review_min_similarity = float(os.getenv('REVIEW_MIN_SIMILARITY', '0.6'))
+        self.missing_max_similarity = float(os.getenv('MISSING_MAX_SIMILARITY', '0.4'))
         self.vlm = vlm
         if self.vlm is None and self.vlm_enabled:
             self.vlm = VlmClient(
@@ -131,6 +132,7 @@ class OcrEngine:
                     if vlm_result['done_reason'] == 'length':
                         page_review.append({'text': None, 'reason': 'vlm_output_truncated', 'similarity': None})
                     page_review.extend(find_suspicious(markdown, paddle_text, self.review_min_similarity))
+                    page_review.extend(find_missing(markdown, lines, self.missing_max_similarity))
                 except Exception as exc:
                     page_review.append({'text': None, 'reason': 'vlm_failed', 'similarity': None,
                                         'detail': f'{type(exc).__name__}: {exc}'[:300]})

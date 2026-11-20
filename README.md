@@ -53,7 +53,7 @@ If the model cannot load, `/health` reports `model_ready: false` and `/ocr` retu
 Each page is read by two models at the same time:
 
 - **Typhoon OCR 1.5 3B** (`scb10x/typhoon-ocr1.5-3b`, served by the project's own `ollama` service) produces the main text as Markdown, with tables as HTML. It reads Thai far better than PaddleOCR but can invent plausible text or misread digits.
-- **PaddleOCR** provides `lines` with `bbox`/`confidence` and cross-checks Typhoon. Typhoon words with no similar PaddleOCR text (`REVIEW_MIN_SIMILARITY`, default 0.6), and numbers/emails PaddleOCR did not read the same way, are listed in `review`.
+- **PaddleOCR** provides `lines` with `bbox`/`confidence` and cross-checks Typhoon. Typhoon words with no similar PaddleOCR text (`REVIEW_MIN_SIMILARITY`, default 0.6), and numbers/emails PaddleOCR did not read the same way, are listed in `review`. PaddleOCR lines with almost nothing similar in the Typhoon output (`MISSING_MAX_SIMILARITY`, default 0.4) are listed as `missing_in_vlm` with their `bbox`, because Typhoon sometimes skips whole lines.
 
 `review` is a list of things to check by hand, not a verdict: it also contains words Typhoon read correctly but PaddleOCR misread. If Typhoon is not ready or fails, the page falls back to PaddleOCR text (`source: "paddleocr"`) and `review` says why. On first start the OCR engine pulls the model (about 3.2 GB) in the background; `/health` shows `vlm_ready`. Images are resized for Typhoon so the long side is 1300–1800 px (`VLM_MIN_LONG_SIDE`, `VLM_MAX_LONG_SIDE`). Measure accuracy on your own documents with `eval/` before relying on it.
 
