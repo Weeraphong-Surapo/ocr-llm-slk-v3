@@ -62,4 +62,25 @@ describe('OCR job API', () => {
     }
     expect((sent!.get('file') as File).name).toBe('upload')
   })
+  it('detects the real file type instead of trusting the declared one', async () => {
+    let seenType = ''
+    const capturing: OcrClient = { async process({ file }) { seenType = file.type; return { pages: [], text: '' } } }
+    const app = createApp(capturing, { apiKey: undefined })
+    const body = new FormData()
+    body.append('file', new File(['%PDF-1.7 fake'], '01 (2).pdf', { type: 'image/png' }))
+    body.append('prompt', 'อ่าน')
+    const response = await app.request('/api/v1/jobs', { method: 'POST', body })
+    expect(response.status).toBe(202)
+    const id = (await response.json()).data.job_id
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(seenType).toBe('application/pdf')
+    expect((await (await app.request(`/api/v1/jobs/${id}`)).json()).data.mime_type).toBe('application/pdf')
+  })
+  it('rejects files whose bytes are not a supported type even if declared as PDF', async () => {
+    const app = createApp(fakeOcr, { apiKey: undefined })
+    const body = new FormData()
+    body.append('file', new File(['hello'], 'x.pdf', { type: 'application/pdf' }))
+    body.append('prompt', 'อ่าน')
+    expect((await app.request('/api/v1/jobs', { method: 'POST', body })).status).toBe(422)
+  })
 })

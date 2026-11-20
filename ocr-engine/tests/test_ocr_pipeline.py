@@ -1,5 +1,5 @@
 import numpy as np
-from app.ocr_pipeline import normalize_result, scale_bbox, upscale_small_image
+from app.ocr_pipeline import normalize_result, scale_bbox, sniff_file_type, upscale_small_image
 def test_small_image_is_enlarged_up_to_target_long_side():
     image = np.zeros((660, 465, 3), dtype=np.uint8)
     out, factor = upscale_small_image(image, 2000, 4.0)
@@ -23,3 +23,11 @@ def test_normalize_result_converts_numpy_boxes():
     result = {'rec_texts': ['ทดสอบ'], 'rec_scores': [0.9], 'rec_polys': [np.array([[1, 2], [3, 2], [3, 4], [1, 4]])]}
     lines = normalize_result(result)['lines']
     assert lines[0]['bbox'] == [[1, 2], [3, 2], [3, 4], [1, 4]]
+
+
+def test_sniff_file_type_uses_content_not_declared_type():
+    assert sniff_file_type(b'%PDF-1.7\n...') == 'application/pdf'
+    assert sniff_file_type(b'\x89PNG\r\n\x1a\n....') == 'image/png'
+    assert sniff_file_type(b'\xff\xd8\xff\xe0....') == 'image/jpeg'
+    assert sniff_file_type(b'RIFF\x00\x00\x00\x00WEBPVP8 ') == 'image/webp'
+    assert sniff_file_type(b'hello') is None

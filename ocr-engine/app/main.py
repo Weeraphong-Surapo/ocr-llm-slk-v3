@@ -5,6 +5,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from .engine import OcrEngine
+from .ocr_pipeline import sniff_file_type
 
 app = FastAPI(title='OCR Engine', version='0.1.0')
 engine = OcrEngine()
@@ -53,15 +54,15 @@ def gpu_health() -> Dict[str, Any]:
 
 @app.post('/ocr')
 async def ocr(file: UploadFile = File(...), prompt: str = Form(...)) -> Dict[str, Any]:
-    supported = {'application/pdf', 'image/png', 'image/jpeg', 'image/webp'}
-    if file.content_type not in supported:
-        raise HTTPException(status_code=422, detail='Unsupported file type')
     if not engine.ready:
         raise HTTPException(status_code=503, detail=engine.error or 'OCR model is not ready')
     data = await file.read()
+    content_type = sniff_file_type(data)
+    if content_type is None:
+        raise HTTPException(status_code=422, detail='Unsupported file type (expected PDF, PNG, JPEG or WebP content)')
     try:
         # Typhoon takes seconds per page; keep the event loop free so /health stays responsive.
-        return await run_in_threadpool(engine.process, data, file.content_type or '')
+        return await run_in_threadpool(engine.process, data, content_type)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

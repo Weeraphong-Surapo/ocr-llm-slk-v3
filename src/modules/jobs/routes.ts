@@ -1,12 +1,12 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { maxUploadBytes } from '../../config/env.js'
+import { sniffFileType } from '../../lib/file-type.js'
 import { failure, success } from '../../lib/response.js'
 import { InlineQueue, type OcrClient } from './queue.js'
 import { MemoryJobStore, type JobStore } from './store.js'
 
 const promptSchema = z.string().trim().min(1).max(20_000)
-const acceptedTypes = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp'])
 
 export type JobRouteDeps = { store?: JobStore; ocrClient: OcrClient; concurrency?: number }
 
@@ -20,13 +20,17 @@ export function createJobRoutes(deps: JobRouteDeps) {
     const file = body.file
     const prompt = body.prompt
     if (!(file instanceof File)) return c.json(failure('INVALID_FILE', 'file is required'), 422)
-    if (!acceptedTypes.has(file.type)) return c.json(failure('UNSUPPORTED_FILE', 'Only PDF/PNG/JPEG/WebP are accepted'), 422)
+    const detectedType = sniffFileType(new Uint8Array(await file.slice(0, 16).arrayBuffer()))
+    if (!detectedType) return c.json(failure('UNSUPPORTED_FILE', 'Only PDF/PNG/JPEG/WebP are accepted'), 422)
     if (file.size > maxUploadBytes) return c.json(failure('FILE_TOO_LARGE', `Maximum upload is ${maxUploadBytes / 1024 / 1024} MB`), 413)
     const parsedPrompt = promptSchema.safeParse(typeof prompt === 'string' ? prompt : '')
     if (!parsedPrompt.success) return c.json(failure('INVALID_PROMPT', 'prompt is required and must be <= 20,000 chars'), 422)
 
-    const job = store.create({ filename: file.name || 'upload', mime_type: file.type, prompt: parsedPrompt.data })
-    queue.enqueue(job, file, deps.ocrClient)
+    // Use the type found in the file's bytes, e.g. a PDF uploaded as image/png is processed as a PDF.
+    const name = file.name || 'upload'
+    const typedFile = detectedType === file.type ? file : new File([file], name, { type: detectedType })
+    const job = store.create({ filename: name, mime_type: detectedType, prompt: parsedPrompt.data })
+    queue.enqueue(job, typedFile, deps.ocrClient)
     return c.json(success({ job_id: job.id, status: job.status }), 202)
   })
 

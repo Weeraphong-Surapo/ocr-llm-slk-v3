@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import fitz
 import numpy as np
 from PIL import Image
 
 SUPPORTED_TYPES = {'application/pdf', 'image/png', 'image/jpeg', 'image/webp'}
+def sniff_file_type(data: bytes) -> Optional[str]:
+    """Real file type from its first bytes; the declared content type is not trusted."""
+    if data.startswith(b'%PDF-'):
+        return 'application/pdf'
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if data.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
 
 
 def render_pdf_pages(data: bytes, max_pages: int) -> Iterable[np.ndarray]:
