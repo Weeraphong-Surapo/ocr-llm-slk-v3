@@ -23,7 +23,7 @@ export const openApiDocument = {
     '/api/v1/jobs': {
       post: {
         tags: ['OCR Jobs'],
-        operationId: 'createOcrJob',
+        operationId: 'createOcrJob', security: [{ ApiKeyHeader: [] }, { BearerAuth: [] }],
         summary: 'Submit a PDF/image OCR job',
         requestBody: {
           required: true,
@@ -43,6 +43,7 @@ export const openApiDocument = {
         },
         responses: {
           '202': { description: 'Job accepted', content: { 'application/json': { schema: { $ref: '#/components/schemas/JobAcceptedResponse' } } } },
+          '401': { description: 'Missing or invalid API key' },
           '413': { description: 'File too large' },
           '422': { description: 'Invalid file or prompt' }
         }
@@ -50,26 +51,31 @@ export const openApiDocument = {
     },
     '/api/v1/jobs/{id}': {
       get: {
-        tags: ['OCR Jobs'], operationId: 'getOcrJob', summary: 'Get OCR job status',
+        tags: ['OCR Jobs'], operationId: 'getOcrJob', security: [{ ApiKeyHeader: [] }, { BearerAuth: [] }], summary: 'Get OCR job status',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
         responses: {
           '200': { description: 'Job status', content: { 'application/json': { schema: { $ref: '#/components/schemas/JobResponse' } } } },
+          '401': { description: 'Missing or invalid API key' },
           '404': { description: 'Job not found' }
         }
       }
     },
     '/api/v1/jobs/{id}/result': {
       get: {
-        tags: ['OCR Jobs'], operationId: 'getOcrResult', summary: 'Get completed OCR result',
+        tags: ['OCR Jobs'], operationId: 'getOcrResult', security: [{ ApiKeyHeader: [] }, { BearerAuth: [] }], summary: 'Get completed OCR result',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
         responses: {
           '200': { description: 'OCR result', content: { 'application/json': { schema: { $ref: '#/components/schemas/ResultResponse' } } } },
-          '404': { description: 'Job not found' }, '409': { description: 'Job is not completed' }
+          '401': { description: 'Missing or invalid API key' }, '404': { description: 'Job not found' }, '409': { description: 'Job is not completed' }
         }
       }
     }
   },
   components: {
+    securitySchemes: {
+      ApiKeyHeader: { type: 'apiKey', in: 'header', name: 'X-API-Key', description: 'API key (same value as API_KEY on the server)' },
+      BearerAuth: { type: 'http', scheme: 'bearer', description: 'Alternative: Authorization: Bearer <API key>' }
+    },
     schemas: {
       HealthResponse: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { service: { type: 'string' }, status: { type: 'string' }, queue_concurrency: { type: 'integer' } }, required: ['service', 'status', 'queue_concurrency'] } }, required: ['success', 'data'] },
       JobAcceptedResponse: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { job_id: { type: 'string', format: 'uuid' }, status: { type: 'string', enum: ['queued'] } }, required: ['job_id', 'status'] } }, required: ['success', 'data'] },

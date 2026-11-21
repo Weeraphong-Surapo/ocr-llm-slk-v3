@@ -105,4 +105,11 @@ describe('OCR job API', () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(seen).toBe('auto')
   })
+  it('documents the X-API-Key header in OpenAPI', async () => {
+    const doc = await (await createApp(fakeOcr).request('/api/openapi.json')).json()
+    expect(doc.components.securitySchemes.ApiKeyHeader).toEqual(expect.objectContaining({ type: 'apiKey', in: 'header', name: 'X-API-Key' }))
+    expect(doc.paths['/api/v1/jobs'].post.security).toContainEqual({ ApiKeyHeader: [] })
+    expect(doc.paths['/api/v1/jobs/{id}'].get.responses['401']).toBeDefined()
+    expect(doc.paths['/health'].get.security).toBeUndefined()
+  })
 })
