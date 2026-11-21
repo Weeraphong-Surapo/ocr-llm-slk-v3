@@ -29,7 +29,6 @@ export class InlineQueue {
         this.active -= 1
       }
     }
-    if (this.pending.length) void this.drain()
   }
 }
 
