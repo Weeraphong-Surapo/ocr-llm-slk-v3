@@ -32,6 +32,9 @@ class OcrEngine:
         self.upscale_max_factor = float(os.getenv('OCR_UPSCALE_MAX_FACTOR', '4'))
         # Typhoon OCR via Ollama: main Thai reader. PaddleOCR cross-checks its output.
         self.vlm_enabled = _env_bool('VLM_ENABLED', True)
+        self.vlm_mode = os.getenv('VLM_MODE', 'selective').strip().lower()
+        self.vlm_selective_min_confidence = float(os.getenv('VLM_SELECTIVE_MIN_CONFIDENCE', '0.88'))
+        self.vlm_selective_min_chars = int(os.getenv('VLM_SELECTIVE_MIN_CHARS', '80'))
         self.vlm_min_long_side = int(os.getenv('VLM_MIN_LONG_SIDE', '1300'))
         self.vlm_max_long_side = int(os.getenv('VLM_MAX_LONG_SIDE', '1800'))
         self.review_min_similarity = float(os.getenv('REVIEW_MIN_SIMILARITY', '0.6'))
@@ -158,6 +161,17 @@ class OcrEngine:
                 lines.append(line)
         return lines
 
+    def _should_use_vlm(self, lines: List[Dict[str, Any]], paddle_text: str, is_pdf: bool) -> bool:
+        """Use the expensive VLM only for weak PDF pages in selective mode."""
+        if not is_pdf or self.vlm_mode == 'always':
+            return True
+        if self.vlm_mode in {'off', 'disabled'}:
+            return False
+        confidences = [float(line['confidence']) for line in lines if line.get('confidence') is not None]
+        average_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        return (not lines or len(paddle_text.strip()) < self.vlm_selective_min_chars or
+                average_confidence < self.vlm_selective_min_confidence)
+
     def process(self, data: bytes, content_type: str, prompt: str = '', response_format: str = 'auto') -> Dict[str, Any]:
         if not self.pipeline:
             raise RuntimeError(self.error or 'OCR model is not ready')
@@ -175,10 +189,11 @@ class OcrEngine:
             # preserves page order in the returned result.
             lines = self._read_with_paddle(image, upscale=not is_pdf)
             paddle_text = '\n'.join(line['text'] for line in lines if line['text'])
-            vlm_future = self._executor.submit(self._read_with_vlm, image) if use_vlm else None
-            page_jobs.append((page_number, lines, paddle_text, vlm_future))
+            use_vlm_for_page = use_vlm and self._should_use_vlm(lines, paddle_text, is_pdf)
+            vlm_future = self._executor.submit(self._read_with_vlm, image) if use_vlm_for_page else None
+            page_jobs.append((page_number, lines, paddle_text, vlm_future, use_vlm_for_page))
 
-        for page_number, lines, paddle_text, vlm_future in page_jobs:
+        for page_number, lines, paddle_text, vlm_future, use_vlm_for_page in page_jobs:
             page_review: List[Dict[str, Any]] = []
             markdown: Optional[str] = None
             if vlm_future is not None:
@@ -193,9 +208,12 @@ class OcrEngine:
                 except Exception as exc:
                     page_review.append({'text': None, 'reason': 'vlm_failed', 'similarity': None,
                                         'detail': f'{type(exc).__name__}: {exc}'[:300]})
-            elif self.vlm is not None:
+            elif self.vlm is not None and not use_vlm:
                 page_review.append({'text': None, 'reason': 'vlm_unavailable', 'similarity': None,
                                     'detail': self.vlm_error})
+            elif self.vlm is not None and not use_vlm_for_page:
+                page_review.append({'text': None, 'reason': 'vlm_skipped_selective', 'similarity': None,
+                                    'detail': 'PaddleOCR confidence/text length passed the selective threshold'})
             for item in page_review:
                 item['page_number'] = page_number
             review.extend(page_review)

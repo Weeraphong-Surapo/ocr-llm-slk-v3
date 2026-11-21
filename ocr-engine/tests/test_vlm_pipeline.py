@@ -128,6 +128,20 @@ def test_engine_flags_when_vlm_not_ready():
     assert result['engines']['vlm'] is None
 
 
+def test_selective_vlm_skips_strong_pdf_pages_but_keeps_weak_pages():
+    engine = make_engine(FakeVlm('x'))
+    assert not engine._should_use_vlm(
+        [{'text': 'ข้อความในใบเสร็จ ' * 8, 'confidence': 0.95}],
+        'ข้อความในใบเสร็จ ' * 8,
+        True,
+    )
+    assert engine._should_use_vlm(
+        [{'text': 'เลขที่ ???', 'confidence': 0.55}],
+        'เลขที่ ???',
+        True,
+    )
+
+
 def test_keep_alive_is_sent_as_number_when_numeric():
     assert parse_keep_alive('-1') == -1
     assert parse_keep_alive(' 300 ') == 300
