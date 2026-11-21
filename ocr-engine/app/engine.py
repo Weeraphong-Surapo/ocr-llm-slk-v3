@@ -24,6 +24,9 @@ class OcrEngine:
         self.error: Optional[str] = None
         self.device = os.getenv('OCR_DEVICE', 'gpu:0')
         self.max_pages = int(os.getenv('OCR_MAX_PAGES', '50'))
+        # Bound VLM requests within one document. The API queue remains one job
+        # at a time, so two page requests do not multiply across users.
+        self.page_concurrency = max(1, int(os.getenv('OCR_PAGE_CONCURRENCY', '2')))
         # Images whose long side is below this are enlarged before PaddleOCR (0 disables).
         self.upscale_min_long_side = int(os.getenv('OCR_UPSCALE_MIN_LONG_SIDE', '2000'))
         self.upscale_max_factor = float(os.getenv('OCR_UPSCALE_MAX_FACTOR', '4'))
@@ -41,8 +44,10 @@ class OcrEngine:
                 url=os.getenv('OLLAMA_URL', 'http://ollama:11434'),
                 model=os.getenv('VLM_MODEL', 'scb10x/typhoon-ocr1.5-3b'),
                 timeout=float(os.getenv('VLM_TIMEOUT_SECONDS', '120')),
-                num_predict=int(os.getenv('VLM_NUM_PREDICT', '6144')),
-                num_ctx=int(os.getenv('VLM_NUM_CTX', '16384')),
+                # VLM receives one rendered page, unlike the answer LLM which
+                # receives the complete OCR document and keeps a 16K window.
+                num_predict=int(os.getenv('VLM_NUM_PREDICT', '4096')),
+                num_ctx=int(os.getenv('VLM_NUM_CTX', '8192')),
                 keep_alive=os.getenv('VLM_KEEP_ALIVE', '-1'),
             )
         self.vlm_ready = False
@@ -62,7 +67,7 @@ class OcrEngine:
         self.llm_ready = False
         self.llm_error: Optional[str] = None if self.llm else 'LLM disabled'
         self._llm_loaded = threading.Event()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='vlm')
+        self._executor = ThreadPoolExecutor(max_workers=self.page_concurrency, thread_name_prefix='vlm')
 
     def load(self) -> None:
         try:
@@ -163,11 +168,17 @@ class OcrEngine:
         review: List[Dict[str, Any]] = []
         is_pdf = content_type == 'application/pdf'
         inputs = render_pdf_pages(data, self.max_pages) if is_pdf else [decode_image(data)]
+        page_jobs = []
         for page_number, image in enumerate(inputs, start=1):
-            # Typhoon runs over HTTP while PaddleOCR runs here, so the page costs about one Typhoon call.
-            vlm_future = self._executor.submit(self._read_with_vlm, image) if use_vlm else None
+            # Keep PaddleOCR sequential on the GPU, while up to N Typhoon page
+            # requests run concurrently in Ollama. This overlaps page OCR and
+            # preserves page order in the returned result.
             lines = self._read_with_paddle(image, upscale=not is_pdf)
             paddle_text = '\n'.join(line['text'] for line in lines if line['text'])
+            vlm_future = self._executor.submit(self._read_with_vlm, image) if use_vlm else None
+            page_jobs.append((page_number, lines, paddle_text, vlm_future))
+
+        for page_number, lines, paddle_text, vlm_future in page_jobs:
             page_review: List[Dict[str, Any]] = []
             markdown: Optional[str] = None
             if vlm_future is not None:
@@ -176,8 +187,9 @@ class OcrEngine:
                     markdown = vlm_result['markdown']
                     if vlm_result['done_reason'] == 'length':
                         page_review.append({'text': None, 'reason': 'vlm_output_truncated', 'similarity': None})
-                    page_review.extend(find_suspicious(markdown, paddle_text, self.review_min_similarity))
-                    page_review.extend(find_missing(markdown, lines, self.missing_max_similarity))
+                    if markdown is not None:
+                        page_review.extend(find_suspicious(markdown, paddle_text, self.review_min_similarity))
+                        page_review.extend(find_missing(markdown, lines, self.missing_max_similarity))
                 except Exception as exc:
                     page_review.append({'text': None, 'reason': 'vlm_failed', 'similarity': None,
                                         'detail': f'{type(exc).__name__}: {exc}'[:300]})

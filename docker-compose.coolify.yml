@@ -41,14 +41,17 @@ services:
       CUDA_VISIBLE_DEVICES: "0"
       OCR_DEVICE: gpu:0
       OCR_MAX_PAGES: ${OCR_MAX_PAGES:-50}
+      OCR_PAGE_CONCURRENCY: ${OCR_PAGE_CONCURRENCY:-2}
       OCR_UPSCALE_MIN_LONG_SIDE: ${OCR_UPSCALE_MIN_LONG_SIDE:-2000}
       OCR_UPSCALE_MAX_FACTOR: ${OCR_UPSCALE_MAX_FACTOR:-4}
       VLM_ENABLED: ${VLM_ENABLED:-true}
       OLLAMA_URL: http://ollama:11434
       VLM_MODEL: ${VLM_MODEL:-scb10x/typhoon-ocr1.5-3b}
       VLM_TIMEOUT_SECONDS: ${VLM_TIMEOUT_SECONDS:-120}
-      VLM_NUM_PREDICT: ${VLM_NUM_PREDICT:-6144}
-      VLM_NUM_CTX: ${VLM_NUM_CTX:-16384}
+      # OCR handles one rendered page per request; keep its window smaller so
+      # page latency and KV-cache cost do not penalize multi-page PDFs.
+      VLM_NUM_PREDICT: ${VLM_NUM_PREDICT:-4096}
+      VLM_NUM_CTX: ${VLM_NUM_CTX:-8192}
       VLM_KEEP_ALIVE: ${VLM_KEEP_ALIVE:--1}
       REVIEW_MIN_SIMILARITY: ${REVIEW_MIN_SIMILARITY:-0.6}
       MISSING_MAX_SIMILARITY: ${MISSING_MAX_SIMILARITY:-0.4}
@@ -85,7 +88,7 @@ services:
     restart: unless-stopped
     environment:
       OLLAMA_KEEP_ALIVE: "-1"
-      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_NUM_PARALLEL: "2"
       # Keep both OCR and answer models resident for lowest latency. Reduce to 1
       # only if production peak VRAM shows OOM or excessive memory pressure.
       OLLAMA_MAX_LOADED_MODELS: "2"
