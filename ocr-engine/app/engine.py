@@ -42,7 +42,7 @@ class OcrEngine:
                 model=os.getenv('VLM_MODEL', 'scb10x/typhoon-ocr1.5-3b'),
                 timeout=float(os.getenv('VLM_TIMEOUT_SECONDS', '120')),
                 num_predict=int(os.getenv('VLM_NUM_PREDICT', '6144')),
-                num_ctx=int(os.getenv('VLM_NUM_CTX', '12288')),
+                num_ctx=int(os.getenv('VLM_NUM_CTX', '16384')),
                 keep_alive=os.getenv('VLM_KEEP_ALIVE', '-1'),
             )
         self.vlm_ready = False
@@ -55,9 +55,9 @@ class OcrEngine:
                 url=os.getenv('OLLAMA_URL', 'http://ollama:11434'),
                 model=os.getenv('LLM_MODEL', 'scb10x/typhoon2.5-qwen3-4b'),
                 timeout=float(os.getenv('LLM_TIMEOUT_SECONDS', '120')),
-                num_ctx=int(os.getenv('LLM_NUM_CTX', '8192')),
+                num_ctx=int(os.getenv('LLM_NUM_CTX', '16384')),
                 num_predict=int(os.getenv('LLM_NUM_PREDICT', '4096')),
-                keep_alive=os.getenv('VLM_KEEP_ALIVE', '-1'),
+                keep_alive=os.getenv('LLM_KEEP_ALIVE', '-1'),
             )
         self.llm_ready = False
         self.llm_error: Optional[str] = None if self.llm else 'LLM disabled'
