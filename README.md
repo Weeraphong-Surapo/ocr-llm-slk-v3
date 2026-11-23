@@ -36,8 +36,9 @@ API:
 - `GET /api/v1/jobs/:id/result`
 
 `response_schema` is an inline JSON Schema object serialized as a multipart string. It constrains
-the JSON returned in `result.answer.content`. The engine groups adjacent PaddleOCR cells by row
-for structured answers and validates the answer against the schema before returning it.
+the JSON returned in `result.answer.content`. For structured answers, the engine groups adjacent
+PaddleOCR cells by row and aligns complete label and decimal-value columns with a consistent
+vertical offset. The engine validates the answer against the schema before returning it.
 
 Cancellation removes a queued job immediately and returns HTTP 200 with status `cancelled`.
 A running job returns HTTP 202 with status `cancelling`. The OCR engine stops scheduling new work

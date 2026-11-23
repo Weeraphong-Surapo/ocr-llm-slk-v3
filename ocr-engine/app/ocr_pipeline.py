@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import re
+from dataclasses import dataclass, replace
+from statistics import median
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import fitz
 import numpy as np
@@ -60,6 +63,66 @@ def scale_bbox(bbox: Any, factor: float) -> Any:
     return [[round(float(x) / factor), round(float(y) / factor)] for x, y in bbox]
 
 
+@dataclass(frozen=True)
+class _LayoutCell:
+    y: float
+    left: float
+    right: float
+    height: float
+    text: str
+
+
+_DECIMAL_CELL = re.compile(r'[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\.[0-9]+')
+
+
+def _column_runs(cells: List[_LayoutCell], edge: Callable[[_LayoutCell], float], height: float) -> Iterable[List[_LayoutCell]]:
+    columns: List[List[_LayoutCell]] = []
+    for cell in sorted(cells, key=edge):
+        if not columns or edge(cell) - edge(columns[-1][0]) > height / 2:
+            columns.append([])
+        columns[-1].append(cell)
+
+    for column in columns:
+        run: List[_LayoutCell] = []
+        for cell in sorted(column, key=lambda item: item.y):
+            if run and cell.y - run[-1].y > height * 3:
+                if len(run) >= 4:
+                    yield run
+                run = []
+            run.append(cell)
+        if len(run) >= 4:
+            yield run
+
+
+def _align_parallel_columns(cells: List[_LayoutCell]) -> List[_LayoutCell]:
+    """Pair a complete label/value block when the two columns have consistently shifted baselines."""
+    if not cells:
+        return cells
+    height = median(cell.height for cell in cells)
+    if height <= 0:
+        return cells
+
+    values = [cell for cell in cells if _DECIMAL_CELL.fullmatch(cell.text.strip())]
+    labels = [cell for cell in cells if any(character.isalpha() for character in cell.text)]
+    label_runs = list(_column_runs(labels, lambda cell: cell.left, height))
+    aligned = {}
+    for value_run in _column_runs(values, lambda cell: cell.right, height):
+        gap = median(second.y - first.y for first, second in zip(value_run, value_run[1:]))
+        left_edge = min(cell.left for cell in value_run)
+        candidates = []
+        for label_run in label_runs:
+            if len(label_run) != len(value_run) or max(cell.right for cell in label_run) >= left_edge:
+                continue
+            offsets = [value.y - label.y for value, label in zip(value_run, label_run)]
+            shift = median(offsets)
+            if height / 2 < abs(shift) < gap * 0.85 and max(abs(offset - shift) for offset in offsets) <= height / 3:
+                candidates.append(label_run)
+        # Equal lengths and a single candidate keep missing or ambiguous cells in their original positions.
+        if len(candidates) == 1:
+            aligned.update((value, replace(value, y=label.y)) for value, label in zip(value_run, candidates[0]))
+    return [aligned.get(cell, cell) for cell in cells]
+
+
 def paddle_layout_text(lines: List[Dict[str, Any]]) -> str:
     """Join text at the same height in left-to-right order to preserve table cells."""
     positioned = []
@@ -69,13 +132,13 @@ def paddle_layout_text(lines: List[Dict[str, Any]]) -> str:
         if not line.get('bbox'):
             return '\n'.join(line['text'] for line in lines if line['text'])
         xs, ys = zip(*line['bbox'])
-        positioned.append(((min(ys) + max(ys)) / 2, min(xs), max(ys) - min(ys), line['text']))
+        positioned.append(_LayoutCell((min(ys) + max(ys)) / 2, min(xs), max(xs), max(ys) - min(ys), line['text']))
 
     rows = []
-    for y, x, height, text in sorted(positioned):
-        if not rows or y - rows[-1][0] > min(height, rows[-1][1]) / 2:
-            rows.append((y, height, []))
-        rows[-1][2].append((x, text))
+    for cell in sorted(_align_parallel_columns(positioned), key=lambda item: (item.y, item.left)):
+        if not rows or cell.y - rows[-1][0] > min(cell.height, rows[-1][1]) / 2:
+            rows.append((cell.y, cell.height, []))
+        rows[-1][2].append((cell.left, cell.text))
     return '\n'.join(' | '.join(text for _, text in sorted(cells)) for _, _, cells in rows)
 
 
