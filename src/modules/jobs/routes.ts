@@ -8,6 +8,7 @@ import { MemoryJobStore, type JobStore } from './store.js'
 
 const promptSchema = z.string().trim().min(1).max(20_000)
 const responseFormatSchema = z.enum(['auto', 'json', 'text']).default('auto')
+const responseSchemaShape = z.object({ type: z.literal('object'), properties: z.record(z.unknown()) })
 
 export type JobRouteDeps = { store?: JobStore; ocrClient: OcrClient; concurrency?: number }
 
@@ -32,8 +33,27 @@ export function createJobRoutes(deps: JobRouteDeps) {
     const typedFile = detectedType === file.type ? file : new File([file], name, { type: detectedType })
     const parsedFormat = responseFormatSchema.safeParse(typeof body.response_format === 'string' && body.response_format ? body.response_format : undefined)
     if (!parsedFormat.success) return c.json(failure('INVALID_RESPONSE_FORMAT', 'response_format must be auto, json or text'), 422)
-    const job = store.create({ filename: name, mime_type: detectedType, prompt: parsedPrompt.data, response_format: parsedFormat.data })
-    queue.enqueue(job, typedFile, deps.ocrClient)
+    let responseSchema: string | undefined
+    if (body.response_schema !== undefined) {
+      const raw = body.response_schema
+      const message = 'response_schema must be an inline JSON Schema object for a JSON response (max 20000 characters)'
+      if (parsedFormat.data === 'text' || typeof raw !== 'string' || raw.length > 20_000) {
+        return c.json(failure('INVALID_RESPONSE_SCHEMA', message), 422)
+      }
+      try {
+        if (!responseSchemaShape.safeParse(JSON.parse(raw)).success) {
+          return c.json(failure('INVALID_RESPONSE_SCHEMA', message), 422)
+        }
+      } catch {
+        return c.json(failure('INVALID_RESPONSE_SCHEMA', message), 422)
+      }
+      responseSchema = raw
+    }
+    const job = store.create({
+      filename: name, mime_type: detectedType, prompt: parsedPrompt.data,
+      response_format: responseSchema ? 'json' : parsedFormat.data,
+    })
+    queue.enqueue(job, typedFile, deps.ocrClient, responseSchema)
     return c.json(success({ job_id: job.id, status: job.status }), 202)
   })
 

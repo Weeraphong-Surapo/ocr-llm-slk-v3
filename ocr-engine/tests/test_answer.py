@@ -1,5 +1,8 @@
 import json
 
+from fastapi.testclient import TestClient
+
+from app import main
 from app.answer import AnswerClient, build_answer, check_answer, parse_json_answer, wants_json
 from app.engine import OcrEngine
 
@@ -94,6 +97,61 @@ def test_chat_request_is_grounded_and_uses_json_format():
     assert sent['format'] == 'json' and sent['options']['temperature'] == 0 and sent['options']['num_ctx'] == 8192
     assert '<document>\nเอกสาร\n</document>' in sent['messages'][1]['content']
     assert 'ห้ามเดา' in sent['messages'][0]['content']
+
+
+def test_structured_answer_preserves_ocr_rows_and_validates_items(monkeypatch):
+    from tests.test_vlm_pipeline import png_bytes
+    schema = {
+        'type': 'object',
+        'properties': {'items': {'type': 'array', 'items': {'type': 'object'}}},
+        'required': ['items'],
+        'additionalProperties': False,
+    }
+    received = []
+    item = {'quantity': '1', 'price': '37000.00', 'amount': '37000.00'}
+    answers = iter([{'items': [item]}, {'items': [item, 'withholding', []]}])
+
+    def post(path, payload, timeout, cancelled=None):
+        received.append(payload)
+        return {'message': {'content': json.dumps(next(answers))}, 'done_reason': 'stop'}
+
+    class InvoicePipeline:
+        def predict(self, image):
+            return [{
+                'rec_texts': ['37,000.00', '1 งาน', 'GRAND TOTAL', '37,450.00'],
+                'rec_polys': [
+                    [[40, 18], [58, 18], [58, 25], [40, 25]],
+                    [[15, 17], [30, 17], [30, 24], [15, 24]],
+                    [[20, 45], [39, 45], [39, 54], [20, 54]],
+                    [[40, 46], [58, 46], [58, 55], [40, 55]],
+                ],
+            }]
+
+    monkeypatch.setenv('VLM_ENABLED', 'false')
+    engine = OcrEngine(llm=AnswerClient('http://x', 'm', 10, 8192, 1000, '-1', post=post))
+    engine.pipeline = InvoicePipeline()
+    engine.llm_ready = True
+    engine.upscale_min_long_side = 0
+    monkeypatch.setattr(engine, 'load', lambda: None)
+    monkeypatch.setattr(main, 'engine', engine)
+
+    with TestClient(main.app) as client:
+        def submit(raw_schema):
+            return client.post('/ocr', data={'prompt': 'Read the items', 'response_schema': raw_schema},
+                               files={'file': ('invoice.png', png_bytes(), 'image/png')})
+
+        assert submit('{').status_code == 422
+        assert submit(json.dumps({**schema, 'required': True})).status_code == 422
+        assert received == []
+        result = submit(json.dumps(schema)).json()['answer']
+        assert result['content'] == {'items': [item]} and result['error'] is None
+        assert received[0]['format'] == schema
+        user_prompt = received[0]['messages'][1]['content']
+        assert '1 งาน | 37,000.00\nGRAND TOTAL | 37,450.00' in user_prompt
+        assert '"sources"' not in user_prompt
+
+        invalid = submit(json.dumps(schema)).json()['answer']
+        assert invalid['content'] is None and invalid['error'] == 'response_schema_mismatch'
 
 
 def test_engine_adds_answer_when_prompt_given():

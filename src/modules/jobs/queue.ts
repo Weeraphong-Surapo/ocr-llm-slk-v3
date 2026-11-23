@@ -5,6 +5,7 @@ type OcrInput = {
   file: File
   prompt: string
   responseFormat?: ResponseFormat
+  responseSchema?: string
   jobId?: string
   signal?: AbortSignal
 }
@@ -15,12 +16,12 @@ export interface OcrClient {
 
 export class InlineQueue {
   private readonly active = new Map<string, AbortController>()
-  private readonly pending: Array<{ job: Job; file: File; client: OcrClient }> = []
+  private readonly pending: Array<{ job: Job; file: File; client: OcrClient; responseSchema?: string }> = []
 
   constructor(private readonly store: JobStore, private readonly concurrency = 1) {}
 
-  enqueue(job: Job, file: File, client: OcrClient) {
-    this.pending.push({ job, file, client })
+  enqueue(job: Job, file: File, client: OcrClient, responseSchema?: string) {
+    this.pending.push({ job, file, client, responseSchema })
     void this.drain()
   }
 
@@ -47,7 +48,9 @@ export class InlineQueue {
       this.active.set(id, controller)
       this.store.update(id, { status: 'processing' })
       try {
-        const result = await item.client.process({ file: item.file, prompt, responseFormat, jobId: id, signal: controller.signal })
+        const result = await item.client.process({
+          file: item.file, prompt, responseFormat, responseSchema: item.responseSchema, jobId: id, signal: controller.signal,
+        })
         this.store.update(id, controller.signal.aborted ? { status: 'cancelled' } : { status: 'completed', result })
       } catch (error) {
         if (controller.signal.aborted && error === controller.signal.reason) {
@@ -74,6 +77,7 @@ export class HttpOcrClient implements OcrClient {
     body.append('file', input.file, input.file.name || 'upload')
     body.append('prompt', input.prompt)
     body.append('response_format', input.responseFormat ?? 'auto')
+    if (input.responseSchema !== undefined) body.append('response_schema', input.responseSchema)
     const finished = new AbortController()
     const requestCancellation = () => {
       if (input.jobId) void this.cancelInEngine(input.jobId, finished.signal)
