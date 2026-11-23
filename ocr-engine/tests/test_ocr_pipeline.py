@@ -1,5 +1,5 @@
 import numpy as np
-from app.ocr_pipeline import normalize_result, scale_bbox, sniff_file_type, upscale_small_image
+from app.ocr_pipeline import normalize_result, paddle_layout_text, scale_bbox, sniff_file_type, upscale_small_image
 def test_small_image_is_enlarged_up_to_target_long_side():
     image = np.zeros((660, 465, 3), dtype=np.uint8)
     out, factor = upscale_small_image(image, 2000, 4.0)
@@ -31,3 +31,28 @@ def test_sniff_file_type_uses_content_not_declared_type():
     assert sniff_file_type(b'\xff\xd8\xff\xe0....') == 'image/jpeg'
     assert sniff_file_type(b'RIFF\x00\x00\x00\x00WEBPVP8 ') == 'image/webp'
     assert sniff_file_type(b'hello') is None
+
+
+def _cell(text, left, right, y):
+    return {'text': text, 'bbox': [[left, y - 10], [right, y - 10], [right, y + 10], [left, y + 10]]}
+
+
+def test_parallel_shifted_columns_preserve_the_amounts_for_each_label():
+    labels = ['SUBTOTAL', 'DISCOUNT', 'TAX BASE', 'VAT', 'GRAND TOTAL']
+    amounts = ['485.96', '0.00', '485.96', '34.02', '519.98']
+    lines = [_cell(label, 730, 950, 1119 + 34 * row) for row, label in enumerate(labels)]
+    lines += [_cell(amount, 1050, 1125, 1098 + 34 * row) for row, amount in enumerate(amounts)]
+    lines.append(_cell('7.00%', 890, 950, 1200))
+
+    output = paddle_layout_text(lines).splitlines()
+
+    assert [line for line in output if ' | ' in line] == [f'{label} | {amount}' for label, amount in zip(labels, amounts)]
+    assert '7.00%' in output
+
+
+def test_a_missing_amount_does_not_shift_other_rows():
+    labels = ['FIRST', 'SECOND', 'THIRD', 'FOURTH', 'FIFTH']
+    lines = [_cell(label, 730, 950, 100 + 34 * row) for row, label in enumerate(labels)]
+    lines += [_cell(f'{row}.00', 1050, 1125, 100 + 34 * row) for row in [0, 1, 3, 4]]
+
+    assert paddle_layout_text(lines).splitlines() == ['FIRST | 0.00', 'SECOND | 1.00', 'THIRD', 'FOURTH | 3.00', 'FIFTH | 4.00']
