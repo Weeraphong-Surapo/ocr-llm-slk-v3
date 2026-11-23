@@ -37,8 +37,9 @@ API:
 
 Cancellation removes a queued job immediately and returns HTTP 200 with status `cancelled`.
 A running job returns HTTP 202 with status `cancelling`. The OCR engine stops scheduling new work
-for the job and finishes any PaddleOCR or Ollama calls already in progress. The job holds its queue
-slot until the engine returns, then moves to `cancelled` without a result.
+and closes in-flight Ollama requests for image reading and answer generation. A PaddleOCR call
+already running can finish before the engine returns. The job then releases its queue slot and
+moves to `cancelled` without a result.
 Poll `GET /api/v1/jobs/:id` to see the final status. Repeated cancellation requests return
 the current cancellation status. Cancelling a completed or failed job returns HTTP 409.
 If communication with the engine fails before it confirms the stop, the API reports `failed`.

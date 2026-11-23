@@ -21,7 +21,7 @@ class FakeLlm:
         self.content, self.reason, self.error = content, reason, error
         self.calls = []
 
-    def answer(self, prompt, document, as_json):
+    def answer(self, prompt, document, as_json, cancelled=None):
         self.calls.append((prompt, document, as_json))
         if self.error:
             raise self.error
@@ -85,7 +85,7 @@ def test_parse_json_answer_strips_code_fences():
 
 def test_chat_request_is_grounded_and_uses_json_format():
     sent = {}
-    def post(path, payload, timeout):
+    def post(path, payload, timeout, cancelled=None):
         sent.update(payload)
         return {'message': {'content': '<think>x</think>{"a": 1}'}, 'done_reason': 'stop'}
     client = AnswerClient('http://x', 'm', 10, 8192, 1000, '-1', post=post)

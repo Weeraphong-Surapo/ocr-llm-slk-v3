@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import re
+from threading import Event
 from typing import Any, Dict, List, Optional, Tuple
 
+from .cancellation import OcrCancelled
 from .crosscheck import _best_similarity, _compact, _plain_vlm_text
 from .vlm import parse_keep_alive
 
@@ -54,7 +56,8 @@ class AnswerClient:
         self._post('/api/generate', {'model': self.model, 'prompt': '', 'keep_alive': self.keep_alive,
                                      'options': {'num_ctx': self.num_ctx}}, timeout=300)
 
-    def answer(self, prompt: str, document: str, as_json: bool) -> Tuple[str, str]:
+    def answer(self, prompt: str, document: str, as_json: bool,
+               cancelled: Optional[Event] = None) -> Tuple[str, str]:
         user = f'คำสั่ง: {prompt}\n\n<document>\n{document}\n</document>'
         if as_json:
             user += f'\n\n{JSON_INSTRUCTION}'
@@ -67,7 +70,7 @@ class AnswerClient:
         }
         if as_json:
             payload['format'] = 'json'
-        data = self._post('/api/chat', payload, timeout=self.timeout)
+        data = self._post('/api/chat', payload, timeout=self.timeout, cancelled=cancelled)
         content = str((data.get('message') or {}).get('content', ''))
         content = _THINK.sub('', content).strip()
         return content, str(data.get('done_reason', ''))
@@ -160,7 +163,8 @@ def check_answer(answer: Any, document_markdown: str, review: List[Dict[str, Any
 
 
 def build_answer(client: Optional[AnswerClient], ready: bool, error: Optional[str], prompt: str,
-                 response_format: str, document_markdown: str, review: List[Dict[str, Any]]) -> Dict[str, Any]:
+                 response_format: str, document_markdown: str, review: List[Dict[str, Any]],
+                 cancelled: Optional[Event] = None) -> Dict[str, Any]:
     as_json = wants_json(prompt, response_format)
     result: Dict[str, Any] = {'format': 'json' if as_json else 'text', 'content': None, 'sources': None,
                               'review': [], 'model': client.model if client else None, 'error': None}
@@ -171,7 +175,9 @@ def build_answer(client: Optional[AnswerClient], ready: bool, error: Optional[st
         result['error'] = 'empty_document'
         return result
     try:
-        content, reason = client.answer(prompt, document_markdown, as_json)
+        content, reason = client.answer(prompt, document_markdown, as_json, cancelled=cancelled)
+    except OcrCancelled:
+        raise
     except Exception as exc:
         result['error'] = f'llm_failed: {type(exc).__name__}: {exc}'[:300]
         return result
