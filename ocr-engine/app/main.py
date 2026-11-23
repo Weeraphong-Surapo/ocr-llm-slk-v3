@@ -11,6 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from .cancellation import OcrCancelled
 from .engine import OcrEngine
 from .ocr_pipeline import sniff_file_type
+from .response_schema import parse_response_schema
 
 app = FastAPI(title='OCR Engine', version='0.1.0')
 engine = OcrEngine()
@@ -63,9 +64,14 @@ def gpu_health() -> Dict[str, Any]:
 
 @app.post('/ocr')
 async def ocr(request: Request, file: UploadFile = File(...), prompt: str = Form(''), response_format: str = Form('auto'),
+              response_schema: Optional[str] = Form(None),
               job_id: Optional[UUID] = Header(None, alias='X-OCR-Job-Id')) -> Dict[str, Any]:
     if response_format not in ('auto', 'json', 'text'):
         raise HTTPException(status_code=422, detail='response_format must be auto, json or text')
+    try:
+        schema = parse_response_schema(response_schema, response_format)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not engine.ready:
         raise HTTPException(status_code=503, detail=engine.error or 'OCR model is not ready')
     data = await file.read()
@@ -80,7 +86,7 @@ async def ocr(request: Request, file: UploadFile = File(...), prompt: str = Form
     disconnect = asyncio.create_task(cancel_on_disconnect(request, cancelled))
     try:
         # Typhoon takes seconds per page; keep the event loop free so /health stays responsive.
-        return await run_in_threadpool(engine.process, data, content_type, prompt, response_format, cancelled)
+        return await run_in_threadpool(engine.process, data, content_type, prompt, response_format, cancelled, schema)
     except OcrCancelled as exc:
         raise HTTPException(status_code=409, detail='OCR job was cancelled') from exc
     except ValueError as exc:

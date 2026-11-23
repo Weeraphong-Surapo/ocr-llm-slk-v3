@@ -74,6 +74,36 @@ describe('OCR job API', () => {
       globalThis.fetch = original
     }
     expect((sent!.get('file') as File).name).toBe('upload')
+    expect(sent!.has('response_schema')).toBe(false)
+  })
+
+  it('forwards the optional response schema through the job queue and rejects malformed input', async () => {
+    const schema = JSON.stringify({ type: 'object', properties: { items: { type: 'array' } } })
+    let sent: FormData | undefined
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      sent = init?.body as FormData
+      return Response.json({ pages: [], text: '' })
+    })
+    try {
+      const app = createApp(new HttpOcrClient('http://engine'), {})
+      const submit = (responseSchema: string, format?: string) => {
+        const body = new FormData()
+        body.append('file', new File(['%PDF-test'], 'invoice.pdf', { type: 'application/pdf' }))
+        body.append('prompt', 'อ่านข้อมูล')
+        body.append('response_schema', responseSchema)
+        if (format) body.append('response_format', format)
+        return app.request('/api/v1/jobs', { method: 'POST', body })
+      }
+      expect((await submit('{')).status).toBe(422)
+      expect((await submit('[]')).status).toBe(422)
+      expect((await submit(schema, 'text')).status).toBe(422)
+      expect(fetch).not.toHaveBeenCalled()
+      expect((await submit(schema)).status).toBe(202)
+      expect(sent?.get('response_format')).toBe('json')
+      expect(sent?.get('response_schema')).toBe(schema)
+    } finally {
+      fetch.mockRestore()
+    }
   })
   it('detects the real file type instead of trusting the declared one', async () => {
     let seenType = ''

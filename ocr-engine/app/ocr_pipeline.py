@@ -60,6 +60,25 @@ def scale_bbox(bbox: Any, factor: float) -> Any:
     return [[round(float(x) / factor), round(float(y) / factor)] for x, y in bbox]
 
 
+def paddle_layout_text(lines: List[Dict[str, Any]]) -> str:
+    """Join text at the same height in left-to-right order to preserve table cells."""
+    positioned = []
+    for line in lines:
+        if not line['text'].strip():
+            continue
+        if not line.get('bbox'):
+            return '\n'.join(line['text'] for line in lines if line['text'])
+        xs, ys = zip(*line['bbox'])
+        positioned.append(((min(ys) + max(ys)) / 2, min(xs), max(ys) - min(ys), line['text']))
+
+    rows = []
+    for y, x, height, text in sorted(positioned):
+        if not rows or y - rows[-1][0] > min(height, rows[-1][1]) / 2:
+            rows.append((y, height, []))
+        rows[-1][2].append((x, text))
+    return '\n'.join(' | '.join(text for _, text in sorted(cells)) for _, _, cells in rows)
+
+
 def result_to_dict(result: Any) -> Dict[str, Any]:
     value = getattr(result, 'json', None)
     if callable(value):

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .answer import AnswerClient, build_answer
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
-from .ocr_pipeline import decode_image, normalize_result, render_pdf_pages, scale_bbox, upscale_small_image
+from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
 
 PADDLE_MODEL = 'PP-OCRv5_mobile_det + th_PP-OCRv5_mobile_rec'
@@ -184,7 +184,8 @@ class OcrEngine:
         check_cancelled(cancelled)
 
     def process(self, data: bytes, content_type: str, prompt: str = '', response_format: str = 'auto',
-                cancelled: Optional[threading.Event] = None) -> Dict[str, Any]:
+                cancelled: Optional[threading.Event] = None,
+                response_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cancelled = cancelled if cancelled is not None else threading.Event()
         check_cancelled(cancelled)
         if not self.pipeline:
@@ -206,8 +207,13 @@ class OcrEngine:
             if not self.llm_ready and not self._llm_loaded.is_set():
                 self._wait_for_model(self._llm_loaded, cancelled)
             check_cancelled(cancelled)
+            answer_text = text
+            if response_schema is not None:
+                answer_text = '\n\n'.join(paddle_layout_text(page['lines']) if page['source'] == 'paddleocr'
+                                          else page['text'] for page in pages if page['text'])
             result['answer'] = build_answer(self.llm, self.llm_ready, self.llm_error, prompt.strip(),
-                                            response_format, text, review, cancelled=cancelled)
+                                            response_format, answer_text, review, cancelled=cancelled,
+                                            response_schema=response_schema)
         check_cancelled(cancelled)
         return result
 

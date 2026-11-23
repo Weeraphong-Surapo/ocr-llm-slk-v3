@@ -12,6 +12,8 @@ import re
 from threading import Event
 from typing import Any, Dict, List, Optional, Tuple
 
+from jsonschema import Draft202012Validator
+
 from .cancellation import OcrCancelled
 from .crosscheck import _best_similarity, _compact, _plain_vlm_text
 from .vlm import parse_keep_alive
@@ -57,9 +59,11 @@ class AnswerClient:
                                      'options': {'num_ctx': self.num_ctx}}, timeout=300)
 
     def answer(self, prompt: str, document: str, as_json: bool,
-               cancelled: Optional[Event] = None) -> Tuple[str, str]:
+               cancelled: Optional[Event] = None, response_schema: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
         user = f'คำสั่ง: {prompt}\n\n<document>\n{document}\n</document>'
-        if as_json:
+        if response_schema is not None:
+            user += '\n\nตอบเป็น JSON ตาม schema ที่กำหนด ใช้ null เมื่อไม่มีข้อมูล'
+        elif as_json:
             user += f'\n\n{JSON_INSTRUCTION}'
         payload: Dict[str, Any] = {
             'model': self.model,
@@ -69,7 +73,7 @@ class AnswerClient:
             'options': {'temperature': 0, 'num_ctx': self.num_ctx, 'num_predict': self.num_predict},
         }
         if as_json:
-            payload['format'] = 'json'
+            payload['format'] = response_schema if response_schema is not None else 'json'
         data = self._post('/api/chat', payload, timeout=self.timeout, cancelled=cancelled)
         content = str((data.get('message') or {}).get('content', ''))
         content = _THINK.sub('', content).strip()
@@ -164,8 +168,8 @@ def check_answer(answer: Any, document_markdown: str, review: List[Dict[str, Any
 
 def build_answer(client: Optional[AnswerClient], ready: bool, error: Optional[str], prompt: str,
                  response_format: str, document_markdown: str, review: List[Dict[str, Any]],
-                 cancelled: Optional[Event] = None) -> Dict[str, Any]:
-    as_json = wants_json(prompt, response_format)
+                 cancelled: Optional[Event] = None, response_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    as_json = response_schema is not None or wants_json(prompt, response_format)
     result: Dict[str, Any] = {'format': 'json' if as_json else 'text', 'content': None, 'sources': None,
                               'review': [], 'model': client.model if client else None, 'error': None}
     if client is None or not ready:
@@ -175,7 +179,8 @@ def build_answer(client: Optional[AnswerClient], ready: bool, error: Optional[st
         result['error'] = 'empty_document'
         return result
     try:
-        content, reason = client.answer(prompt, document_markdown, as_json, cancelled=cancelled)
+        options = {'response_schema': response_schema} if response_schema is not None else {}
+        content, reason = client.answer(prompt, document_markdown, as_json, cancelled=cancelled, **options)
     except OcrCancelled:
         raise
     except Exception as exc:
@@ -193,7 +198,11 @@ def build_answer(client: Optional[AnswerClient], ready: bool, error: Optional[st
         result['error'] = result['error'] or 'invalid_json'
         return result
     data, sources = parsed, None
-    if isinstance(parsed, dict) and 'data' in parsed:
+    if response_schema is not None:
+        if not Draft202012Validator(response_schema).is_valid(parsed):
+            result['error'] = result['error'] or 'response_schema_mismatch'
+            return result
+    elif isinstance(parsed, dict) and 'data' in parsed:
         data, sources = parsed.get('data'), parsed.get('sources')
     result['content'] = data
     result['sources'] = sources
