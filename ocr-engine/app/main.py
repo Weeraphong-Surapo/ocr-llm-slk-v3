@@ -1,14 +1,19 @@
-from typing import Any, Dict, Optional
+import asyncio
 import os
+from contextlib import suppress
+from threading import Event
+from typing import Any, Dict, Optional
+from uuid import UUID
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
-from .engine import OcrEngine
+from .engine import OcrCancelled, OcrEngine
 from .ocr_pipeline import sniff_file_type
 
 app = FastAPI(title='OCR Engine', version='0.1.0')
 engine = OcrEngine()
+active_jobs: Dict[UUID, Event] = {}
 
 
 @app.on_event('startup')
@@ -56,7 +61,8 @@ def gpu_health() -> Dict[str, Any]:
 
 
 @app.post('/ocr')
-async def ocr(file: UploadFile = File(...), prompt: str = Form(''), response_format: str = Form('auto')) -> Dict[str, Any]:
+async def ocr(request: Request, file: UploadFile = File(...), prompt: str = Form(''), response_format: str = Form('auto'),
+              job_id: Optional[UUID] = Header(None, alias='X-OCR-Job-Id')) -> Dict[str, Any]:
     if response_format not in ('auto', 'json', 'text'):
         raise HTTPException(status_code=422, detail='response_format must be auto, json or text')
     if not engine.ready:
@@ -65,10 +71,40 @@ async def ocr(file: UploadFile = File(...), prompt: str = Form(''), response_for
     content_type = sniff_file_type(data)
     if content_type is None:
         raise HTTPException(status_code=422, detail='Unsupported file type (expected PDF, PNG, JPEG or WebP content)')
+    cancelled = Event()
+    if job_id is not None:
+        if job_id in active_jobs:
+            raise HTTPException(status_code=409, detail='OCR job is already running')
+        active_jobs[job_id] = cancelled
+    disconnect = asyncio.create_task(cancel_on_disconnect(request, cancelled))
     try:
         # Typhoon takes seconds per page; keep the event loop free so /health stays responsive.
-        return await run_in_threadpool(engine.process, data, content_type, prompt, response_format)
+        return await run_in_threadpool(engine.process, data, content_type, prompt, response_format, cancelled)
+    except OcrCancelled as exc:
+        raise HTTPException(status_code=409, detail='OCR job was cancelled') from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'OCR inference failed: {exc}') from exc
+    finally:
+        cancelled.set()
+        disconnect.cancel()
+        if job_id is not None:
+            active_jobs.pop(job_id)
+        with suppress(asyncio.CancelledError):
+            await disconnect
+
+
+async def cancel_on_disconnect(request: Request, cancelled: Event) -> None:
+    while (await request.receive())['type'] != 'http.disconnect':
+        pass
+    cancelled.set()
+
+
+@app.post('/ocr/{job_id}/cancel', status_code=202)
+async def cancel_ocr(job_id: UUID) -> Dict[str, str]:
+    cancelled = active_jobs.get(job_id)
+    if cancelled is None:
+        raise HTTPException(status_code=404, detail='OCR job is not running')
+    cancelled.set()
+    return {'status': 'cancelling'}

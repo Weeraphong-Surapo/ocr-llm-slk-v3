@@ -32,7 +32,16 @@ API:
 - `GET /api/docs/` (Swagger UI)
 - `POST /api/v1/jobs` multipart: `file`, `prompt`
 - `GET /api/v1/jobs/:id`
+- `POST /api/v1/jobs/:id/cancel`
 - `GET /api/v1/jobs/:id/result`
+
+Cancellation removes a queued job immediately and returns HTTP 200 with status `cancelled`.
+A running job returns HTTP 202 with status `cancelling`. The OCR engine stops scheduling new work
+for the job and finishes any PaddleOCR or Ollama calls already in progress. The job holds its queue
+slot until the engine returns, then moves to `cancelled` without a result.
+Poll `GET /api/v1/jobs/:id` to see the final status. Repeated cancellation requests return
+the current cancellation status. Cancelling a completed or failed job returns HTTP 409.
+If communication with the engine fails before it confirms the stop, the API reports `failed`.
 
 Current development limitation: job store is in-memory and queue is in-process. Restart loses jobs. Production must replace these with PostgreSQL + Redis/BullMQ. The Coolify Compose file reserves the production services and environment contract, but the current API scaffold does not yet consume Redis/PostgreSQL.
 

@@ -1,4 +1,4 @@
-export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed'
+export type JobStatus = 'queued' | 'processing' | 'cancelling' | 'cancelled' | 'completed' | 'failed'
 
 export type ReviewItem = {
   page_number: number

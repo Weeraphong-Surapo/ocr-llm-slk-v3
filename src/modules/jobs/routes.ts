@@ -43,6 +43,15 @@ export function createJobRoutes(deps: JobRouteDeps) {
     return c.json(success(job))
   })
 
+  app.post('/:id/cancel', (c) => {
+    const job = queue.cancel(c.req.param('id'))
+    if (!job) return c.json(failure('NOT_FOUND', 'Job not found'), 404)
+    if (job.status === 'completed' || job.status === 'failed') {
+      return c.json(failure('JOB_FINISHED', `Job status is ${job.status}`), 409)
+    }
+    return c.json(success({ job_id: job.id, status: job.status }), job.status === 'cancelling' ? 202 : 200)
+  })
+
   app.get('/:id/result', (c) => {
     const job = store.get(c.req.param('id'))
     if (!job) return c.json(failure('NOT_FOUND', 'Job not found'), 404)

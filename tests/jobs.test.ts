@@ -1,10 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { Hono } from 'hono'
 import { HttpOcrClient } from '../src/modules/jobs/queue.js'
 import { createApp } from '../src/app.js'
 import type { OcrClient } from '../src/modules/jobs/queue.js'
+import { createJobRoutes } from '../src/modules/jobs/routes.js'
 
 const fakeOcr: OcrClient = {
   async process() { return { pages: [{ page_number: 1, text: 'ทดสอบ OCR', lines: [] }], text: 'ทดสอบ OCR' } }
+}
+
+async function submitJob(app: Pick<ReturnType<typeof createApp>, 'request'>, filename: string) {
+  const body = new FormData()
+  body.append('file', new File(['%PDF-test'], filename, { type: 'application/pdf' }))
+  body.append('prompt', 'อ่านข้อมูล')
+  const response = await app.request('/api/v1/jobs', { method: 'POST', body })
+  expect(response.status).toBe(202)
+  return `/api/v1/jobs/${(await response.json()).data.job_id}`
 }
 
 describe('OCR job API', () => {
@@ -46,6 +57,8 @@ describe('OCR job API', () => {
     expect((await app.request('/api/v1/jobs/x', { headers: { authorization: 'Bearer wrong' } })).status).toBe(401)
     expect((await app.request('/api/v1/jobs/x', { headers: { authorization: 'Bearer secret' } })).status).not.toBe(401)
     expect((await app.request('/api/v1/jobs/x', { headers: { 'x-api-key': 'secret' } })).status).not.toBe(401)
+    expect((await app.request('/api/v1/jobs/x/cancel', { method: 'POST' })).status).toBe(401)
+    expect((await app.request('/api/v1/jobs/x/cancel', { method: 'POST', headers: { 'x-api-key': 'secret' } })).status).toBe(404)
     expect((await app.request('/health')).status).toBe(200)
   })
   it('forwards a filename to the OCR engine even when the upload has none', async () => {
@@ -110,6 +123,109 @@ describe('OCR job API', () => {
     expect(doc.components.securitySchemes.ApiKeyHeader).toEqual(expect.objectContaining({ type: 'apiKey', in: 'header', name: 'X-API-Key' }))
     expect(doc.paths['/api/v1/jobs'].post.security).toContainEqual({ ApiKeyHeader: [] })
     expect(doc.paths['/api/v1/jobs/{id}'].get.responses['401']).toBeDefined()
+    expect(doc.paths['/api/v1/jobs/{id}/cancel'].post.security).toContainEqual({ ApiKeyHeader: [] })
     expect(doc.paths['/health'].get.security).toBeUndefined()
+  })
+
+  it('removes a queued job and holds the running job slot until cancellation finishes', async () => {
+    const processed: string[] = []
+    let activeSignal: AbortSignal | undefined
+    let release = () => {}
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    const app = new Hono().route('/api/v1/jobs', createJobRoutes({
+      concurrency: 1,
+      ocrClient: {
+        async process({ file, signal }) {
+          processed.push(file.name)
+          if (file.name === 'active.pdf') {
+            activeSignal = signal
+            await blocked
+          }
+          return { pages: [], text: file.name }
+        }
+      }
+    }))
+    const cancel = (path: string) => app.request(`${path}/cancel`, { method: 'POST' })
+    const status = async (path: string) => (await (await app.request(path)).json()).data
+    try {
+      const active = await submitJob(app, 'active.pdf')
+      const queued = await submitJob(app, 'queued.pdf')
+      const next = await submitJob(app, 'next.pdf')
+      expect((await cancel(queued)).status).toBe(200)
+      expect((await status(queued)).status).toBe('cancelled')
+      expect((await cancel(queued)).status).toBe(200)
+      expect((await cancel(active)).status).toBe(202)
+      expect(activeSignal?.aborted).toBe(true)
+      expect((await cancel(active)).status).toBe(202)
+      expect((await status(active)).status).toBe('cancelling')
+      expect(processed).toEqual(['active.pdf'])
+
+      release()
+      await vi.waitFor(async () => expect((await status(next)).status).toBe('completed'))
+      expect(await status(active)).toMatchObject({ status: 'cancelled' })
+      expect((await status(active)).result).toBeUndefined()
+      expect((await app.request(`${active}/result`)).status).toBe(409)
+      expect((await cancel(active)).status).toBe(200)
+      expect((await cancel(next)).status).toBe(409)
+      expect(processed).toEqual(['active.pdf', 'next.pdf'])
+    } finally {
+      release()
+    }
+  })
+
+  it('retries cancellation if the engine has not registered the upload yet', async () => {
+    const jobId = '00000000-0000-4000-8000-000000000001'
+    const controller = new AbortController()
+    let finishInference: (response: Response) => void = () => {}
+    const inference = new Promise<Response>(resolve => { finishInference = resolve })
+    let attempts = 0
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      if (url === 'http://engine/ocr') {
+        expect(init.headers).toEqual({ 'X-OCR-Job-Id': jobId })
+        expect(init.signal).toBeUndefined()
+        return inference
+      }
+      expect(url).toBe(`http://engine/ocr/${jobId}/cancel`)
+      expect(init.method).toBe('POST')
+      return new Response(null, { status: ++attempts === 1 ? 404 : 202 })
+    })
+    vi.stubGlobal('fetch', fetch)
+    try {
+      const result = new HttpOcrClient('http://engine').process({
+        file: new File(['%PDF-test'], 'invoice.pdf'), prompt: 'อ่าน', jobId, signal: controller.signal
+      })
+      const cancelled = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+      controller.abort()
+      await vi.waitFor(() => expect(attempts).toBe(2))
+      finishInference(Response.json({ pages: [], text: '' }))
+      await cancelled
+      expect(fetch).toHaveBeenCalledTimes(3)
+    } finally {
+      finishInference(Response.json({ pages: [], text: '' }))
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('reports cancellation as unconfirmed if engine communication fails', async () => {
+    let disconnect = () => {}
+    const app = createApp({
+      process: () => new Promise((_, reject) => {
+        disconnect = () => reject(new TypeError('fetch failed'))
+      })
+    }, { apiKey: undefined })
+    const job = await submitJob(app, 'invoice.pdf')
+    try {
+      expect((await app.request(`${job}/cancel`, { method: 'POST' })).status).toBe(202)
+      disconnect()
+      await vi.waitFor(async () => {
+        const response = await app.request(job)
+        expect((await response.json()).data).toMatchObject({
+          status: 'failed',
+          error: 'Unable to confirm OCR engine cancellation'
+        })
+      })
+    } finally {
+      disconnect()
+    }
   })
 })
