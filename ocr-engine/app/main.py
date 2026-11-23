@@ -8,7 +8,8 @@ from uuid import UUID
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
-from .engine import OcrCancelled, OcrEngine
+from .cancellation import OcrCancelled
+from .engine import OcrEngine
 from .ocr_pipeline import sniff_file_type
 
 app = FastAPI(title='OCR Engine', version='0.1.0')

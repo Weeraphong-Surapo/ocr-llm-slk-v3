@@ -7,20 +7,12 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, Dict, List, Optional, Tuple
 
 from .answer import AnswerClient, build_answer
+from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
 from .ocr_pipeline import decode_image, normalize_result, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
 
 PADDLE_MODEL = 'PP-OCRv5_mobile_det + th_PP-OCRv5_mobile_rec'
-
-
-class OcrCancelled(Exception):
-    pass
-
-
-def _check_cancelled(cancelled: threading.Event) -> None:
-    if cancelled.is_set():
-        raise OcrCancelled('OCR job was cancelled')
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -155,10 +147,10 @@ class OcrEngine:
 
     def _read_with_vlm(self, image: Any, cancelled: threading.Event) -> Dict[str, Any]:
         assert self.vlm is not None
-        _check_cancelled(cancelled)
+        check_cancelled(cancelled)
         png, _ = prepare_vlm_image(image, self.vlm_min_long_side, self.vlm_max_long_side)
-        _check_cancelled(cancelled)
-        markdown, reason = self.vlm.read_page(png)
+        check_cancelled(cancelled)
+        markdown, reason = self.vlm.read_page(png, cancelled=cancelled)
         return {'markdown': markdown, 'done_reason': reason}
 
     def _read_with_paddle(self, image: Any, upscale: bool) -> List[Dict[str, Any]]:
@@ -189,19 +181,19 @@ class OcrEngine:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or cancelled.wait(min(remaining, 0.1)):
                 break
-        _check_cancelled(cancelled)
+        check_cancelled(cancelled)
 
     def process(self, data: bytes, content_type: str, prompt: str = '', response_format: str = 'auto',
                 cancelled: Optional[threading.Event] = None) -> Dict[str, Any]:
         cancelled = cancelled if cancelled is not None else threading.Event()
-        _check_cancelled(cancelled)
+        check_cancelled(cancelled)
         if not self.pipeline:
             raise RuntimeError(self.error or 'OCR model is not ready')
         if self.vlm is not None and not self.vlm_ready and not self._vlm_loaded.is_set():
             self._wait_for_model(self._vlm_loaded, cancelled)
         use_vlm = self.vlm is not None and self.vlm_ready
         pages, review = self._read_pages(data, content_type, use_vlm, cancelled)
-        _check_cancelled(cancelled)
+        check_cancelled(cancelled)
         text = '\n\n'.join(page['text'] for page in pages if page['text'])
         result: Dict[str, Any] = {
             'pages': pages,
@@ -213,10 +205,10 @@ class OcrEngine:
         if prompt.strip() and self.llm is not None:
             if not self.llm_ready and not self._llm_loaded.is_set():
                 self._wait_for_model(self._llm_loaded, cancelled)
-            _check_cancelled(cancelled)
+            check_cancelled(cancelled)
             result['answer'] = build_answer(self.llm, self.llm_ready, self.llm_error, prompt.strip(),
-                                            response_format, text, review)
-        _check_cancelled(cancelled)
+                                            response_format, text, review, cancelled=cancelled)
+        check_cancelled(cancelled)
         return result
 
     def _read_pages(self, data: bytes, content_type: str, use_vlm: bool,
@@ -229,22 +221,22 @@ class OcrEngine:
         try:
             for page_number, image in enumerate(inputs, start=1):
                 # Keep PaddleOCR sequential while overlapping the independent Typhoon page calls.
-                _check_cancelled(cancelled)
+                check_cancelled(cancelled)
                 lines = self._read_with_paddle(image, upscale=not is_pdf)
-                _check_cancelled(cancelled)
+                check_cancelled(cancelled)
                 paddle_text = '\n'.join(line['text'] for line in lines if line['text'])
                 use_vlm_for_page = use_vlm and self._should_use_vlm(lines, paddle_text, is_pdf)
                 vlm_future = self._executor.submit(self._read_with_vlm, image, cancelled) if use_vlm_for_page else None
                 page_jobs.append((page_number, lines, paddle_text, vlm_future, use_vlm_for_page))
 
             for page_number, lines, paddle_text, vlm_future, use_vlm_for_page in page_jobs:
-                _check_cancelled(cancelled)
+                check_cancelled(cancelled)
                 page_review: List[Dict[str, Any]] = []
                 markdown: Optional[str] = None
                 if vlm_future is not None:
                     try:
                         vlm_result = vlm_future.result()
-                        _check_cancelled(cancelled)
+                        check_cancelled(cancelled)
                         markdown = vlm_result['markdown']
                         if vlm_result['done_reason'] == 'length':
                             page_review.append({'text': None, 'reason': 'vlm_output_truncated', 'similarity': None})
@@ -275,6 +267,6 @@ class OcrEngine:
                     'review': page_review,
                 })
         finally:
-            # Remove pending VLM calls and let any in-flight calls finish before releasing the job slot.
+            # Remove pending calls and wait for active ones to finish cleaning up.
             wait([future for _, _, _, future, _ in page_jobs if future is not None and not future.cancel()])
         return pages, review

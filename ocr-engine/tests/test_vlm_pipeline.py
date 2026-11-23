@@ -83,7 +83,7 @@ class FakeVlm:
     def __init__(self, output=None, error=None):
         self.output, self.error = output, error
 
-    def read_page(self, png):
+    def read_page(self, png, cancelled=None):
         if self.error:
             raise self.error
         return self.output, 'stop'
@@ -217,7 +217,7 @@ def test_vlm_request_sets_context_window_and_unescapes_html():
     import json as _json
     sent = {}
     client = VlmClient('http://x', 'm', 1, 100, '-1', num_ctx=12288)
-    def fake_post(path, payload, timeout):
+    def fake_post(path, payload, timeout, cancelled=None):
         sent.update(payload)
         return {'response': 'BEST MOVING&amp;SERVICE CO.,LTD.', 'done_reason': 'stop'}
     client._post = fake_post

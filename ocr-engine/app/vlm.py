@@ -1,16 +1,18 @@
-"""Typhoon OCR (vision-language model) client served by Ollama. Stdlib only."""
+"""Typhoon OCR (vision-language model) client served by Ollama."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import html
 import io
-import json
-import urllib.error
-import urllib.request
-from typing import Any, Dict, Tuple, Union
+from threading import Event
+from typing import Any, Dict, Optional, Tuple, Union
 
+import httpx
 import numpy as np
 from PIL import Image
+
+from .cancellation import check_cancelled
 
 # Typhoon OCR 1.5 only works with this exact prompt (see ollama.com/scb10x/typhoon-ocr1.5-3b).
 TYPHOON_15_PROMPT = """Extract all text from the image.
@@ -79,16 +81,33 @@ class VlmClient:
         # by a ~1800 px page (~2900 image tokens) and cuts the answer off.
         self.num_ctx = num_ctx
 
-    def _post(self, path: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
-        request = urllib.request.Request(
-            f'{self.url}{path}', data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json'}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors='replace')[:300]
-            raise RuntimeError(f'Ollama {path} returned HTTP {exc.code}: {detail}') from exc
+    def _post(self, path: str, payload: Dict[str, Any], timeout: float,
+              cancelled: Optional[Event] = None) -> Dict[str, Any]:
+        url = f'{self.url}{path}'
+        if cancelled is None:
+            response = httpx.post(url, json=payload, timeout=timeout, follow_redirects=True)
+        else:
+            response = asyncio.run(self._post_cancellable(url, payload, timeout, cancelled))
+        if not response.is_success:
+            raise RuntimeError(f'Ollama {path} returned HTTP {response.status_code}: {response.text[:300]}')
+        return response.json()
+
+    @staticmethod
+    async def _post_cancellable(url: str, payload: Dict[str, Any], timeout: float, cancelled: Event) -> httpx.Response:
+        check_cancelled(cancelled)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            check_cancelled(cancelled)
+            request = asyncio.create_task(client.post(url, json=payload))
+            try:
+                while not request.done():
+                    await asyncio.wait((request,), timeout=0.05)
+                    check_cancelled(cancelled)
+                return request.result()
+            finally:
+                # Wait for HTTPX to close the connection before releasing the OCR job.
+                if not request.done():
+                    request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
 
     def ensure_model(self, pull_timeout: float = 1800) -> None:
         """Pull the model if missing, then load it into VRAM so the first job is not slow."""
@@ -100,7 +119,7 @@ class VlmClient:
         self._post('/api/generate', {'model': self.model, 'prompt': '', 'keep_alive': self.keep_alive,
                                      'options': {'num_ctx': self.num_ctx}}, timeout=300)
 
-    def read_page(self, png: bytes) -> Tuple[str, str]:
+    def read_page(self, png: bytes, cancelled: Optional[Event] = None) -> Tuple[str, str]:
         """Return (markdown, done_reason). done_reason 'length' means the output was cut off."""
         data = self._post('/api/generate', {
             'model': self.model,
@@ -109,7 +128,7 @@ class VlmClient:
             'stream': False,
             'keep_alive': self.keep_alive,
             'options': {**TYPHOON_15_OPTIONS, 'num_predict': self.num_predict, 'num_ctx': self.num_ctx},
-        }, timeout=self.timeout)
+        }, timeout=self.timeout, cancelled=cancelled)
         # Typhoon escapes HTML entities in plain text (e.g. MOVING&amp;SERVICE).
         text = html.unescape(str(data.get('response', ''))).strip()
         if not text:
