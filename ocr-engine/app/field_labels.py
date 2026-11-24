@@ -53,6 +53,15 @@ def identifier(text):
     return _IDENTIFIER.fullmatch(text) and any(character.isdigit() for character in text)
 
 
+def _restores_prefix(value: str, reread: str) -> bool:
+    end = re.match(r'[A-Za-z]*', value).end()
+    reread_end = re.match(r'[A-Za-z]*', reread).end()
+    if not 1 <= reread_end - end <= 2 or value[end:] != reread[reread_end:]:
+        return False
+    letters = iter(reread[:reread_end])
+    return all(letter in letters for letter in value[:end])
+
+
 def _value(text, field):
     if field.get('normalize_digits') is True and _GROUPED_DIGITS.fullmatch(text):
         return re.sub(r'[\s-]+', '', text.translate(_THAI_DIGITS))
@@ -174,16 +183,21 @@ def verify_field_labels(answer, schema, pages, reread=None):
                 if region not in reread_values:
                     reread_values[region] = reread(candidate.page, candidate.box)
                 alternative = reread_values[region]
-                if isinstance(alternative, str) and alternative.endswith(value) and validator.is_valid(alternative):
-                    prefix = alternative[:-len(value)]
-                    if re.fullmatch(r'[A-Za-z]{1,2}', prefix):
-                        accepted = {alternative: replace(candidate, text=alternative, reread=True)}
+                if isinstance(alternative, str) and _restores_prefix(value, alternative) and validator.is_valid(alternative):
+                    accepted = {alternative: replace(candidate, text=alternative, reread=True)}
         collected.append((path, field, row, key, accepted, rejected))
         values_by_path[path] = (field, original_values | accepted.keys() | rejected)
 
     for path, field, row, key, accepted, rejected in collected:
         original = row[key]
-        if not isinstance(original, str) or not original.strip():
+        if original is None or (isinstance(original, str) and not original.strip()):
+            if field.get('fill_missing') is True and len(accepted) == 1:
+                value, candidate = next(iter(accepted.items()))
+                row[key] = value
+                answer.setdefault('field_evidence', {})['$.' + path] = candidate.evidence()
+                answer['review'].append({'path': '$.' + path, 'value': original, 'status': 'field_label_filled'})
+            continue
+        if not isinstance(original, str):
             continue
         value = _value(original.strip(), field)
         if value in accepted:
