@@ -198,6 +198,8 @@ def _validate_structured_answer(data: Any, schema: Dict[str, Any]) -> Optional[L
         for part in location[:-1]:
             parent = parent[part]
         parent[location[-1]] = None
+        if isinstance(error.instance, str) and not error.instance.strip():
+            continue
         review.append({'path': error.json_path, 'location': location, 'value': None, 'status': INVALID_DECIMAL})
     return review if not invalid or validator.is_valid(data) else None
 

@@ -40,7 +40,8 @@ the JSON returned in `result.answer.content`. For structured answers, the engine
 PaddleOCR cells by row and aligns complete label and decimal-value columns with a consistent
 vertical offset. The engine validates the answer against the schema before returning it.
 
-Mark nullable decimal strings with a `pattern` and `"x-ocr-decimal": true`.
+Mark nullable decimal strings with a `pattern` and `"x-ocr-decimal": true`. Empty strings and
+strings containing only whitespace are treated as null for these fields.
 For a single-page PDF that PaddleOCR handled in selective mode, an invalid decimal
 triggers one Typhoon image read. The engine only fills flagged fields with values found in
 the reread and keeps the original row order. Unresolved fields remain `null` and appear in
