@@ -17,6 +17,7 @@ from jsonschema import Draft202012Validator
 
 from .cancellation import OcrCancelled
 from .crosscheck import _best_similarity, _compact, _plain_vlm_text
+from .field_labels import FIELD_LABELS_KEY
 from .item_table import TABLE_KEY, TableRow, TableSpec, cell_number, match_rows, numbered_table_size, same_number
 from .vlm import parse_keep_alive
 
@@ -111,8 +112,9 @@ class AnswerClient:
         system = SYSTEM_PROMPT
         if response_schema is not None:
             user += '\n\nตอบเป็น JSON ตาม schema ที่กำหนด ใช้ null เมื่อไม่มีข้อมูล'
-            model_schema = _capture_decimal_text({key: value for key, value in response_schema.items() if key != TABLE_KEY})
-            if model_schema != response_schema:
+            output_schema = {key: value for key, value in response_schema.items() if key not in (TABLE_KEY, FIELD_LABELS_KEY)}
+            model_schema = _capture_decimal_text(output_schema)
+            if model_schema != output_schema:
                 condition = ' และ Prompt ไม่ระบุวิธีตีความ' if item_table is not None else ''
                 user += f'\nถ้าช่องตัวเลขมีข้อความที่อ่านได้แต่รูปแบบผิด{condition} ให้คัดลอกข้อความเดิมเพื่อให้ระบบตรวจ ห้ามเดาตัวเลข'
             if item_table is not None:
