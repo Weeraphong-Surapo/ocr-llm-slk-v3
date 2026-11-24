@@ -34,6 +34,15 @@ export type Answer = {
   content: unknown
   sources?: Record<string, string | null> | null
   review: AnswerReviewItem[]
+  decimal_evidence?: Record<string, {
+    source_text: string
+    column: string
+    row: number
+    page_number: number
+    reader: 'paddleocr' | 'vlm'
+    method: 'read' | 'interpreted'
+    value: string | null
+  }>
   model: string | null
   error: string | null
 }
