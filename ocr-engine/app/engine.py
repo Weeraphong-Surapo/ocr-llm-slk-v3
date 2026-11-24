@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .answer import INVALID_DECIMAL, AnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
+from .field_labels import verify_field_labels
 from .item_table import TableRow, TableSpec, html_table_rows, item_table_crop, paddle_table_rows
 from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
@@ -233,6 +234,8 @@ class OcrEngine:
                                             pages[0]['lines'], tables, cancelled)
                 pages[0]['review'].append(note)
                 review.append(note)
+            if response_schema is not None and answer['error'] is None:
+                verify_field_labels(answer, response_schema, pages)
             result['answer'] = answer
         check_cancelled(cancelled)
         return result
