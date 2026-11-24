@@ -3,7 +3,7 @@ export type JobStatus = 'queued' | 'processing' | 'cancelling' | 'cancelled' | '
 export type ReviewItem = {
   page_number: number
   text: string | null
-  reason: 'low_similarity' | 'number_or_email_not_confirmed' | 'missing_in_vlm' | 'vlm_failed' | 'vlm_unavailable' | 'vlm_output_truncated'
+  reason: 'low_similarity' | 'number_or_email_not_confirmed' | 'missing_in_vlm' | 'vlm_failed' | 'vlm_unavailable' | 'vlm_output_truncated' | 'vlm_skipped_selective' | 'vlm_decimal_retry'
   similarity: number | null
   bbox?: number[][] | null
   detail?: string | null
@@ -23,7 +23,8 @@ export type ResponseFormat = 'auto' | 'json' | 'text'
 export type AnswerReviewItem = {
   path: string
   value: unknown
-  status: 'not_in_document' | 'uncertain_ocr' | 'label_mismatch' | 'label_not_found' | 'label_missing'
+  status: 'not_in_document' | 'uncertain_ocr' | 'label_mismatch' | 'label_not_found' | 'label_missing' | 'invalid_decimal'
+  location?: Array<string | number>
   flagged?: string[]
   label?: string | null
 }
