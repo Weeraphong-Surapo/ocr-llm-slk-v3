@@ -47,6 +47,20 @@ triggers one Typhoon image read. The engine only fills flagged fields with value
 the reread and keeps the original row order. Unresolved fields remain `null` and appear in
 `answer.review` with status `invalid_decimal` and a field `location`.
 
+For item tables, add an `x-ocr-item-table` object to the schema with `columns`
+(decimal field names mapped to recognized header labels), `anchors` (item keys
+such as `name` or `code`), and optional `derived` (calculated item fields mapped
+to a source column). With recognizable headers and rows, the engine verifies
+item decimals against the corresponding cells. The selective reread crops the
+item table when PaddleOCR can locate all output rows. Both passes use the
+job's prompt. Calculations and interpretations that the prompt requests can
+include the source cell text. The response keeps canonical decimal values
+in `answer.content` and returns verified values and their source text, row,
+column, page and method in `answer.decimal_evidence`. A marked item field can
+only be filled on reread when supported by cell evidence. For unresolved cells
+that the reread identifies as text, the engine can ask the answer model to
+interpret just those cells under the same job prompt.
+
 Cancellation removes a queued job immediately and returns HTTP 200 with status `cancelled`.
 A running job returns HTTP 202 with status `cancelling`. The OCR engine stops scheduling new work
 and closes in-flight Ollama requests for image reading and answer generation. A PaddleOCR call

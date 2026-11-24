@@ -7,9 +7,10 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import closing
 from typing import Any, Dict, List, Optional, Tuple
 
-from .answer import INVALID_DECIMAL, AnswerClient, build_answer, recover_decimal_fields
+from .answer import INVALID_DECIMAL, AnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
+from .item_table import TableRow, TableSpec, html_table_rows, item_table_crop, paddle_table_rows
 from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
 
@@ -146,10 +147,11 @@ class OcrEngine:
     def ready(self) -> bool:
         return self.pipeline is not None
 
-    def _read_with_vlm(self, image: Any, cancelled: threading.Event) -> Dict[str, Any]:
+    def _read_with_vlm(self, image: Any, cancelled: threading.Event, *, detail: bool = False) -> Dict[str, Any]:
         assert self.vlm is not None
         check_cancelled(cancelled)
-        png, _ = prepare_vlm_image(image, self.vlm_min_long_side, self.vlm_max_long_side)
+        min_side = self.vlm_max_long_side if detail else self.vlm_min_long_side
+        png, _ = prepare_vlm_image(image, min_side, self.vlm_max_long_side)
         check_cancelled(cancelled)
         markdown, reason = self.vlm.read_page(png, cancelled=cancelled)
         return {'markdown': markdown, 'done_reason': reason}
@@ -205,20 +207,30 @@ class OcrEngine:
                         'llm': self.llm.model if self.llm else None},
         }
         if prompt.strip() and self.llm is not None:
+            prompt = prompt.strip()
             if not self.llm_ready and not self._llm_loaded.is_set():
                 self._wait_for_model(self._llm_loaded, cancelled)
             check_cancelled(cancelled)
             answer_text = text
+            tables: list[list[TableRow]] = []
             if response_schema is not None:
                 answer_text = '\n\n'.join(paddle_layout_text(page['lines']) if page['source'] == 'paddleocr'
                                           else page['text'] for page in pages if page['text'])
-            answer = build_answer(self.llm, self.llm_ready, self.llm_error, prompt.strip(), response_format,
-                                  answer_text, review, cancelled=cancelled, response_schema=response_schema)
+                spec = TableSpec.from_schema(response_schema)
+                if spec is not None:
+                    for page in pages:
+                        if page['source'] == 'paddleocr':
+                            tables.extend(paddle_table_rows(page['lines'], spec, page['page_number']))
+                        elif all(item['reason'] != 'vlm_output_truncated' for item in page['review']):
+                            tables.extend(html_table_rows(page['text'], spec, page['page_number']))
+            answer = build_answer(self.llm, self.llm_ready, self.llm_error, prompt, response_format,
+                                  answer_text, review, cancelled=cancelled, response_schema=response_schema, item_tables=tables)
             if (response_schema is not None and use_vlm and self.vlm_mode == 'selective'
                     and content_type == 'application/pdf' and len(pages) == 1
                     and any(item['reason'] == 'vlm_skipped_selective' for item in pages[0]['review'])
                     and answer['error'] is None and any(item['status'] == INVALID_DECIMAL for item in answer['review'])):
-                note = self._retry_decimals(data, prompt.strip(), response_format, response_schema, answer, cancelled)
+                note = self._retry_decimals(data, prompt, response_format, response_schema, answer,
+                                            pages[0]['lines'], tables, cancelled)
                 pages[0]['review'].append(note)
                 review.append(note)
             result['answer'] = answer
@@ -226,21 +238,42 @@ class OcrEngine:
         return result
 
     def _retry_decimals(self, data: bytes, prompt: str, response_format: str, schema: Dict[str, Any],
-                        answer: Dict[str, Any], cancelled: threading.Event) -> Dict[str, Any]:
+                        answer: Dict[str, Any], lines: list[dict[str, Any]], tables: list[list[TableRow]],
+                        cancelled: threading.Event) -> Dict[str, Any]:
         note = {'page_number': 1, 'text': None, 'reason': 'vlm_decimal_retry', 'similarity': None}
+        spec = TableSpec.from_schema(schema)
+        crop = item_table_crop(answer['content'].get('items', []), tables, spec) if spec is not None else None
         try:
             check_cancelled(cancelled)
             with closing(render_pdf_pages(data, 1)) as images:
-                vision = self._read_with_vlm(next(images), cancelled)
+                image = next(images)
+                if crop is not None:
+                    left, top, right, bottom = crop
+                    height, width = image.shape[:2]
+                    if left < min(width, right) and top < min(height, bottom):
+                        image = image[top:bottom, left:right]
+                    else:
+                        crop = None
+                vision = self._read_with_vlm(image, cancelled, detail=crop is not None)
         except OcrCancelled:
             raise
         except Exception as exc:
             return {**note, 'reason': 'vlm_failed', 'detail': f'{type(exc).__name__}: {exc}'[:300]}
         if vision['done_reason'] == 'length':
             return {**note, 'reason': 'vlm_output_truncated'}
-        retry = build_answer(self.llm, self.llm_ready, self.llm_error, prompt, response_format, vision['markdown'],
-                             [], cancelled=cancelled, response_schema=schema)
-        recover_decimal_fields(answer, retry, vision['markdown'], schema)
+        markdown = vision['markdown']
+        retry_tables = html_table_rows(markdown, spec, 1) if spec is not None else []
+        retry_text = markdown
+        if crop is not None:
+            left, top, right, bottom = crop
+            outside = [line for line in lines if not line['bbox']
+                       or not all(left <= x < right and top <= y < bottom for x, y in line['bbox'])]
+            retry_text = f'{paddle_layout_text(outside)}\n\n<reread_table>\n{markdown}\n</reread_table>'
+        retry = build_answer(self.llm, self.llm_ready, self.llm_error, prompt, response_format, retry_text,
+                             [], cancelled=cancelled, response_schema=schema, item_tables=retry_tables)
+        if spec is not None and self.llm is not None:
+            interpret_item_cells(self.llm, prompt, retry_text, schema, answer, retry, spec, retry_tables, cancelled)
+        recover_decimal_fields(answer, retry, markdown, schema, tables, retry_tables)
         return note
 
     def _read_pages(self, data: bytes, content_type: str, use_vlm: bool,

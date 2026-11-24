@@ -70,6 +70,7 @@ class _LayoutCell:
     right: float
     height: float
     text: str
+    confidence: Optional[float] = None
 
 
 _DECIMAL_CELL = re.compile(r'[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\.[0-9]+')
@@ -123,23 +124,32 @@ def _align_parallel_columns(cells: List[_LayoutCell]) -> List[_LayoutCell]:
     return [aligned.get(cell, cell) for cell in cells]
 
 
-def paddle_layout_text(lines: List[Dict[str, Any]]) -> str:
-    """Join text at the same height in left-to-right order to preserve table cells."""
+def paddle_layout_rows(lines: List[Dict[str, Any]], *, align: bool = True) -> List[List[_LayoutCell]]:
     positioned = []
     for line in lines:
         if not line['text'].strip():
             continue
         if not line.get('bbox'):
-            return '\n'.join(line['text'] for line in lines if line['text'])
+            return []
         xs, ys = zip(*line['bbox'])
-        positioned.append(_LayoutCell((min(ys) + max(ys)) / 2, min(xs), max(xs), max(ys) - min(ys), line['text']))
+        positioned.append(_LayoutCell((min(ys) + max(ys)) / 2, min(xs), max(xs), max(ys) - min(ys),
+                                      line['text'], line.get('confidence')))
 
     rows = []
-    for cell in sorted(_align_parallel_columns(positioned), key=lambda item: (item.y, item.left)):
-        if not rows or cell.y - rows[-1][0] > min(cell.height, rows[-1][1]) / 2:
-            rows.append((cell.y, cell.height, []))
-        rows[-1][2].append((cell.left, cell.text))
-    return '\n'.join(' | '.join(text for _, text in sorted(cells)) for _, _, cells in rows)
+    cells = _align_parallel_columns(positioned) if align else positioned
+    for cell in sorted(cells, key=lambda item: (item.y, item.left)):
+        if not rows or cell.y - rows[-1][0].y > min(cell.height, rows[-1][0].height) / 2:
+            rows.append([])
+        rows[-1].append(cell)
+    return rows
+
+
+def paddle_layout_text(lines: List[Dict[str, Any]]) -> str:
+    """Join text at the same height in left-to-right order to preserve table cells."""
+    rows = paddle_layout_rows(lines)
+    if not rows:
+        return '\n'.join(line['text'] for line in lines if line['text'])
+    return '\n'.join(' | '.join(cell.text for cell in sorted(row, key=lambda item: item.left)) for row in rows)
 
 
 def result_to_dict(result: Any) -> Dict[str, Any]:
