@@ -10,9 +10,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from .answer import INVALID_DECIMAL, AnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
-from .field_labels import verify_field_labels
+from .field_labels import identifier, verify_field_labels
 from .item_table import TableRow, TableSpec, html_table_rows, item_table_crop, paddle_table_rows
-from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, render_pdf_pages, scale_bbox, upscale_small_image
+from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, render_pdf_field, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
 
 PADDLE_MODEL = 'PP-OCRv5_mobile_det + th_PP-OCRv5_mobile_rec'
@@ -25,6 +25,8 @@ def _env_bool(name: str, default: bool) -> bool:
 class OcrEngine:
     def __init__(self, vlm: Optional[VlmClient] = None, llm: Optional[AnswerClient] = None) -> None:
         self.pipeline: Any = None
+        self._identifier_recognizer: Any = None
+        self._identifier_lock = threading.Lock()
         self.error: Optional[str] = None
         self.device = os.getenv('OCR_DEVICE', 'gpu:0')
         self.max_pages = int(os.getenv('OCR_MAX_PAGES', '50'))
@@ -235,10 +237,38 @@ class OcrEngine:
                 pages[0]['review'].append(note)
                 review.append(note)
             if response_schema is not None and answer['error'] is None:
-                verify_field_labels(answer, response_schema, pages)
+                reread = None
+                if content_type == 'application/pdf':
+                    reread = lambda page_number, box: self._reread_identifier(data, page_number, box, cancelled)
+                verify_field_labels(answer, response_schema, pages, reread)
             result['answer'] = answer
         check_cancelled(cancelled)
         return result
+
+    def _reread_identifier(self, data: bytes, page_number: int, box: tuple[float, float, float, float],
+                           cancelled: threading.Event) -> str | None:
+        check_cancelled(cancelled)
+        try:
+            image = render_pdf_field(data, page_number, box)
+            with self._identifier_lock:
+                check_cancelled(cancelled)
+                if self._identifier_recognizer is None:
+                    from paddleocr import TextRecognition
+
+                    self._identifier_recognizer = TextRecognition(
+                        model_name='en_PP-OCRv5_mobile_rec', device=self.device, enable_mkldnn=False,
+                    )
+                check_cancelled(cancelled)
+                prediction = next(iter(self._identifier_recognizer.predict(image)), None)
+        except OcrCancelled:
+            raise
+        except Exception:
+            return None
+        check_cancelled(cancelled)
+        if prediction is None or prediction['rec_score'] < 0.9:
+            return None
+        value = prediction['rec_text'].strip()
+        return value if identifier(value) else None
 
     def _retry_decimals(self, data: bytes, prompt: str, response_format: str, schema: Dict[str, Any],
                         answer: Dict[str, Any], lines: list[dict[str, Any]], tables: list[list[TableRow]],

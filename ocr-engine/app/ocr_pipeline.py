@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 
 SUPPORTED_TYPES = {'application/pdf', 'image/png', 'image/jpeg', 'image/webp'}
+PDF_SCALE = 2
 def sniff_file_type(data: bytes) -> Optional[str]:
     """Real file type from its first bytes; the declared content type is not trusted."""
     if data.startswith(b'%PDF-'):
@@ -31,11 +32,20 @@ def render_pdf_pages(data: bytes, max_pages: int) -> Iterable[np.ndarray]:
         if document.page_count > max_pages:
             raise ValueError(f'PDF exceeds maximum page count of {max_pages}')
         for page in document:
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(PDF_SCALE, PDF_SCALE), alpha=False)
             image = np.frombuffer(pixmap.samples, dtype=np.uint8)
             yield image.reshape(pixmap.height, pixmap.width, pixmap.n)
     finally:
         document.close()
+
+def render_pdf_field(data: bytes, page_number: int, box: tuple[float, float, float, float]) -> np.ndarray:
+    left, top, right, bottom = box
+    margin = (bottom - top) / 3
+    clip = fitz.Rect(*[point / PDF_SCALE for point in (left - margin, top - margin, right + margin, bottom + margin)])
+    scale = 3 * PDF_SCALE
+    with fitz.open(stream=data, filetype='pdf') as document:
+        pixmap = document[page_number - 1].get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+        return np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(pixmap.height, pixmap.width, pixmap.n)
 
 
 def decode_image(data: bytes) -> np.ndarray:
