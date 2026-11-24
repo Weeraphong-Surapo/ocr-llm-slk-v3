@@ -164,6 +164,8 @@ def test_structured_answer_preserves_ocr_rows_and_validates_items(monkeypatch):
     ('8อ3', '90', 2, None, 1),
     ('803', None, 2, '803', 0),
     (None, '803', 2, None, 0),
+    ('', '803', 2, None, 0),
+    (' \t\n', '803', 2, None, 0),
 ])
 def test_selective_pdf_retries_only_invalid_decimal_fields(first_price, second_price, second_rows, expected_price, retries):
     decimal = {'type': ['string', 'null'], 'pattern': r'^[0-9]+(?:\.[0-9]+)?$', 'x-ocr-decimal': True}
