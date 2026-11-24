@@ -1,5 +1,7 @@
 import json
 
+import fitz
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main
@@ -152,6 +154,74 @@ def test_structured_answer_preserves_ocr_rows_and_validates_items(monkeypatch):
 
         invalid = submit(json.dumps(schema)).json()['answer']
         assert invalid['content'] is None and invalid['error'] == 'response_schema_mismatch'
+
+
+@pytest.mark.parametrize(('first_price', 'second_price', 'second_rows', 'expected_price', 'retries'), [
+    ('8อ3', '803', 2, '803', 1),
+    ('8อ3', 'C', 2, None, 1),
+    ('8อ3', '803', 1, None, 1),
+    ('8อ3', '830', 2, None, 1),
+    ('8อ3', '90', 2, None, 1),
+    ('803', None, 2, '803', 0),
+    (None, '803', 2, None, 0),
+])
+def test_selective_pdf_retries_only_invalid_decimal_fields(first_price, second_price, second_rows, expected_price, retries):
+    decimal = {'type': ['string', 'null'], 'pattern': r'^[0-9]+(?:\.[0-9]+)?$', 'x-ocr-decimal': True}
+    schema = {
+        'type': 'object', 'required': ['items'], 'properties': {'items': {'type': 'array', 'items': {
+            'type': 'object', 'required': ['name', 'price', 'amount'],
+            'properties': {'name': {'type': 'string'}, 'price': decimal, 'amount': decimal},
+            'additionalProperties': False,
+        }}},
+    }
+    first = [{'name': 'Product A', 'price': first_price, 'amount': '600'}, {'name': 'Product B', 'price': '20', 'amount': '20'}]
+    second = [
+        {'name': 'Product A', 'price': second_price, 'amount': '900'},
+        {'name': 'Product B', 'price': '90', 'amount': '90'},
+    ][:second_rows]
+    responses = iter([first, second])
+    requests = []
+
+    def post(path, payload, timeout, cancelled=None):
+        requests.append(payload)
+        return {'message': {'content': json.dumps({'items': next(responses)})}, 'done_reason': 'stop'}
+
+    class Paddle:
+        def predict(self, image):
+            return [{'rec_texts': ['Invoice line ' * 12, 'Product A 600', 'Product B 20', '8อ3'],
+                     'rec_scores': [0.99, 0.98, 0.98, 0.71]}]
+
+    class Vision:
+        model = 'fake-vision'
+        calls = 0
+
+        def read_page(self, image, cancelled=None):
+            self.calls += 1
+            return 'Product A | 803 | 900\nProduct B | 90', 'stop'
+
+    vision = Vision()
+    engine = OcrEngine(vlm=vision, llm=AnswerClient('http://x', 'm', 10, 8192, 1000, '-1', post=post))
+    engine.vlm_mode = 'selective'
+    engine.vlm_selective_min_confidence = 0.88
+    engine.pipeline, engine.vlm_ready, engine.llm_ready = Paddle(), True, True
+    try:
+        with fitz.open() as pdf:
+            pdf.new_page(width=100, height=100)
+            result = engine.process(pdf.tobytes(), 'application/pdf', 'Read the items', response_schema=schema)
+    finally:
+        engine._executor.shutdown()
+
+    assert vision.calls == retries and len(requests) == 1 + retries
+    assert requests[0]['format']['properties']['items']['items']['properties']['price'] == {'type': ['string', 'null']}
+    assert schema['properties']['items']['items']['properties']['price'] == decimal and 'pattern' in decimal
+    assert result['pages'][0]['source'] == 'paddleocr'
+    assert result['answer']['error'] is None
+    assert result['answer']['content']['items'] == [{**first[0], 'price': expected_price}, first[1]]
+    bad = [r for r in result['answer']['review'] if r['status'] == 'invalid_decimal']
+    if retries and expected_price is None:
+        assert bad == [{'path': '$.items[0].price', 'location': ['items', 0, 'price'], 'value': None, 'status': 'invalid_decimal'}]
+    else:
+        assert bad == []
 
 
 def test_engine_adds_answer_when_prompt_given():

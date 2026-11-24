@@ -4,9 +4,10 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import closing
 from typing import Any, Dict, List, Optional, Tuple
 
-from .answer import AnswerClient, build_answer
+from .answer import INVALID_DECIMAL, AnswerClient, build_answer, recover_decimal_fields
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
 from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, render_pdf_pages, scale_bbox, upscale_small_image
@@ -211,11 +212,36 @@ class OcrEngine:
             if response_schema is not None:
                 answer_text = '\n\n'.join(paddle_layout_text(page['lines']) if page['source'] == 'paddleocr'
                                           else page['text'] for page in pages if page['text'])
-            result['answer'] = build_answer(self.llm, self.llm_ready, self.llm_error, prompt.strip(),
-                                            response_format, answer_text, review, cancelled=cancelled,
-                                            response_schema=response_schema)
+            answer = build_answer(self.llm, self.llm_ready, self.llm_error, prompt.strip(), response_format,
+                                  answer_text, review, cancelled=cancelled, response_schema=response_schema)
+            if (response_schema is not None and use_vlm and self.vlm_mode == 'selective'
+                    and content_type == 'application/pdf' and len(pages) == 1
+                    and any(item['reason'] == 'vlm_skipped_selective' for item in pages[0]['review'])
+                    and answer['error'] is None and any(item['status'] == INVALID_DECIMAL for item in answer['review'])):
+                note = self._retry_decimals(data, prompt.strip(), response_format, response_schema, answer, cancelled)
+                pages[0]['review'].append(note)
+                review.append(note)
+            result['answer'] = answer
         check_cancelled(cancelled)
         return result
+
+    def _retry_decimals(self, data: bytes, prompt: str, response_format: str, schema: Dict[str, Any],
+                        answer: Dict[str, Any], cancelled: threading.Event) -> Dict[str, Any]:
+        note = {'page_number': 1, 'text': None, 'reason': 'vlm_decimal_retry', 'similarity': None}
+        try:
+            check_cancelled(cancelled)
+            with closing(render_pdf_pages(data, 1)) as images:
+                vision = self._read_with_vlm(next(images), cancelled)
+        except OcrCancelled:
+            raise
+        except Exception as exc:
+            return {**note, 'reason': 'vlm_failed', 'detail': f'{type(exc).__name__}: {exc}'[:300]}
+        if vision['done_reason'] == 'length':
+            return {**note, 'reason': 'vlm_output_truncated'}
+        retry = build_answer(self.llm, self.llm_ready, self.llm_error, prompt, response_format, vision['markdown'],
+                             [], cancelled=cancelled, response_schema=schema)
+        recover_decimal_fields(answer, retry, vision['markdown'], schema)
+        return note
 
     def _read_pages(self, data: bytes, content_type: str, use_vlm: bool,
                     cancelled: threading.Event) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:

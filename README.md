@@ -40,6 +40,12 @@ the JSON returned in `result.answer.content`. For structured answers, the engine
 PaddleOCR cells by row and aligns complete label and decimal-value columns with a consistent
 vertical offset. The engine validates the answer against the schema before returning it.
 
+Mark nullable decimal strings with a `pattern` and `"x-ocr-decimal": true`.
+For a single-page PDF that PaddleOCR handled in selective mode, an invalid decimal
+triggers one Typhoon image read. The engine only fills flagged fields with values found in
+the reread and keeps the original row order. Unresolved fields remain `null` and appear in
+`answer.review` with status `invalid_decimal` and a field `location`.
+
 Cancellation removes a queued job immediately and returns HTTP 200 with status `cancelled`.
 A running job returns HTTP 202 with status `cancelling`. The OCR engine stops scheduling new work
 and closes in-flight Ollama requests for image reading and answer generation. A PaddleOCR call

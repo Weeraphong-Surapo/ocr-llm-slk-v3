@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from html import unescape
 from threading import Event
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,10 +33,23 @@ _THINK = re.compile(r'<think>.*?</think>', re.S)
 _FENCE = re.compile(r'^```(?:json)?\s*|\s*```$')
 
 
+INVALID_DECIMAL = 'invalid_decimal'
+
+
 def wants_json(prompt: str, response_format: str) -> bool:
     if response_format in ('json', 'text'):
         return response_format == 'json'
     return 'json' in prompt.lower()
+
+
+def _capture_decimal_text(schema: Any) -> Any:
+    if isinstance(schema, dict):
+        # Capture the text OCR actually produced. The original schema validates it below.
+        skip = {'x-ocr-decimal', 'pattern'} if schema.get('x-ocr-decimal') is True else set()
+        return {key: _capture_decimal_text(value) for key, value in schema.items() if key not in skip}
+    if isinstance(schema, list):
+        return [_capture_decimal_text(value) for value in schema]
+    return schema
 
 
 class AnswerClient:
@@ -63,6 +77,9 @@ class AnswerClient:
         user = f'คำสั่ง: {prompt}\n\n<document>\n{document}\n</document>'
         if response_schema is not None:
             user += '\n\nตอบเป็น JSON ตาม schema ที่กำหนด ใช้ null เมื่อไม่มีข้อมูล'
+            model_schema = _capture_decimal_text(response_schema)
+            if model_schema != response_schema:
+                user += '\nถ้าช่องตัวเลขมีข้อความที่อ่านได้แต่รูปแบบผิด ให้คัดลอกข้อความเดิมเพื่อให้ระบบตรวจ ห้ามเดาตัวเลข'
         elif as_json:
             user += f'\n\n{JSON_INSTRUCTION}'
         payload: Dict[str, Any] = {
@@ -73,7 +90,7 @@ class AnswerClient:
             'options': {'temperature': 0, 'num_ctx': self.num_ctx, 'num_predict': self.num_predict},
         }
         if as_json:
-            payload['format'] = response_schema if response_schema is not None else 'json'
+            payload['format'] = model_schema if response_schema is not None else 'json'
         data = self._post('/api/chat', payload, timeout=self.timeout, cancelled=cancelled)
         content = str((data.get('message') or {}).get('content', ''))
         content = _THINK.sub('', content).strip()
@@ -166,6 +183,95 @@ def check_answer(answer: Any, document_markdown: str, review: List[Dict[str, Any
     return results
 
 
+def _validate_structured_answer(data: Any, schema: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    validator = Draft202012Validator(schema)
+    invalid = list(validator.iter_errors(data))
+    if any(not error.path or error.validator not in {'pattern', 'type'}
+           or error.schema.get('x-ocr-decimal') is not True
+           or not validator.evolve(schema=error.schema).is_valid(None) for error in invalid):
+        return None
+
+    review = []
+    for error in invalid:
+        location = list(error.path)
+        parent = data
+        for part in location[:-1]:
+            parent = parent[part]
+        parent[location[-1]] = None
+        review.append({'path': error.json_path, 'location': location, 'value': None, 'status': INVALID_DECIMAL})
+    return review if not invalid or validator.is_valid(data) else None
+
+
+def _row_anchor(original: Any, reread: Any, index: int, schema: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(original, list) or not isinstance(reread, list) or len(original) != len(reread):
+        return None
+
+    def anchor(row: Any, key: str) -> str:
+        value = row.get(key) if isinstance(row, dict) else None
+        return _compact(value) if isinstance(value, str) else ''
+
+    # A repeated table needs a unique, unchanged field to anchor the row across readers.
+    for key, spec in schema.get('properties', {}).items():
+        if not isinstance(spec, dict) or spec.get('x-ocr-decimal'):
+            continue
+        value = anchor(original[index], key)
+        if (value and value == anchor(reread[index], key)
+                and sum(anchor(row, key) == value for row in original) == sum(anchor(row, key) == value for row in reread) == 1):
+            return value
+    return '' if len(original) == 1 else None
+
+
+def recover_decimal_fields(answer: Dict[str, Any], retry: Dict[str, Any], document: str,
+                           schema: Dict[str, Any]) -> None:
+    if retry['error'] is not None:
+        return
+    rows = re.sub(r'<tr\b[^>]*>(.*?)</tr\s*>',
+                  lambda match: '\n' + ' '.join(match[1].split()) + '\n', document, flags=re.I | re.S)
+    raw_text = unescape(re.sub(r'<[^>]+>', ' ', rows))
+    remaining = []
+    recovered = []
+    for entry in answer['review']:
+        if entry['status'] != INVALID_DECIMAL:
+            remaining.append(entry)
+            continue
+        original, reread = answer['content'], retry['content']
+        *path, field = entry['location']
+        spec = schema
+        anchor = ''
+        for part in path:
+            if isinstance(part, int):
+                spec = spec.get('items', {})
+                anchor = _row_anchor(original, reread, part, spec) if isinstance(spec, dict) else None
+                if anchor is None:
+                    reread = None
+                    break
+            else:
+                spec = spec.get('properties', {}).get(part, {})
+                if not isinstance(spec, dict):
+                    spec = {}
+            try:
+                original, reread = original[part], reread[part]
+            except (KeyError, TypeError, IndexError):
+                reread = None
+                break
+        value = reread.get(field) if isinstance(reread, dict) else None
+        evidence = '\n'.join(line for line in raw_text.splitlines() if anchor in _compact(line)) if anchor else raw_text
+        if isinstance(value, str) and re.search(
+                r'(?<![0-9A-Za-z_.,+-])' + re.escape(value.replace(',', '')) + r'(?![0-9A-Za-z_.,])',
+                evidence.replace(',', '')):
+            original[field] = value
+            recovered.append((original, field))
+        else:
+            remaining.append(entry)
+    if not recovered:
+        return
+    if Draft202012Validator(schema).is_valid(answer['content']):
+        answer['review'] = remaining
+    else:
+        for row, field in recovered:
+            row[field] = None
+
+
 def build_answer(client: Optional[AnswerClient], ready: bool, error: Optional[str], prompt: str,
                  response_format: str, document_markdown: str, review: List[Dict[str, Any]],
                  cancelled: Optional[Event] = None, response_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -199,14 +305,16 @@ def build_answer(client: Optional[AnswerClient], ready: bool, error: Optional[st
         return result
     data, sources = parsed, None
     if response_schema is not None:
-        if not Draft202012Validator(response_schema).is_valid(parsed):
+        invalid_decimals = _validate_structured_answer(parsed, response_schema)
+        if invalid_decimals is None:
             result['error'] = result['error'] or 'response_schema_mismatch'
             return result
+        result['review'] = invalid_decimals
     elif isinstance(parsed, dict) and 'data' in parsed:
         data, sources = parsed.get('data'), parsed.get('sources')
     result['content'] = data
     result['sources'] = sources
-    result['review'] = check_answer(data, document_markdown, review)
+    result['review'] += check_answer(data, document_markdown, review)
     if sources is not None:
         already = {item['path'] for item in result['review']}
         result['review'] += [item for item in check_sources(data, sources, document_markdown) if item['path'] not in already]
