@@ -31,10 +31,10 @@ export const openApiDocument = {
             'multipart/form-data': {
               schema: {
                 type: 'object',
-                required: ['file', 'prompt'],
+                required: ['file'],
                 properties: {
                   file: { type: 'string', format: 'binary', description: 'PDF, PNG, JPEG, or WebP' },
-                  prompt: { type: 'string', minLength: 1, maxLength: 20000, description: 'Instruction answered from the OCR text, e.g. "ช่วยเป็น json". The answer is in result.answer.' },
+                  prompt: { type: 'string', minLength: 1, maxLength: 20000, description: 'Required for standard/high_accuracy. Optional for fast OCR-only mode.' },
                   response_format: { type: 'string', enum: ['auto', 'json', 'text'], default: 'auto', description: 'auto = JSON when the prompt mentions json or a response_schema is provided' },
                   mode: { type: 'string', enum: ['fast', 'standard', 'high_accuracy'], default: 'fast', description: 'fast = PaddleOCR only; standard = selective VLM + local answer model; high_accuracy = selective VLM + DeepSeek answer API' },
                   response_schema: { type: 'string', maxLength: 20000, description: 'Optional inline JSON Schema (serialized to a string) for result.answer.content. Requires a JSON response.' }
