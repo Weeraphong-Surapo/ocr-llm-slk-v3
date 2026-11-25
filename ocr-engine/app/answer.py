@@ -230,10 +230,15 @@ def check_answer(answer: Any, document_markdown: str, review: List[Dict[str, Any
 def _validate_structured_answer(data: Any, schema: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     validator = Draft202012Validator(schema)
     invalid = list(validator.iter_errors(data))
-    if any(not error.path or error.validator not in {'pattern', 'type'}
-           or error.schema.get('x-ocr-decimal') is not True
-           or not validator.evolve(schema=error.schema).is_valid(None) for error in invalid):
-        return None
+    # A model may return useful JSON while missing a strict caller field format. Preserve that
+    # content and report each mismatch for review; dropping the complete result makes clients
+    # retry expensive OCR/LLM work and hides the recoverable fields from users.
+    unsupported = [error for error in invalid if not error.path or error.validator not in {'pattern', 'type'}
+                   or error.schema.get('x-ocr-decimal') is not True
+                   or not validator.evolve(schema=error.schema).is_valid(None)]
+    if unsupported:
+        return [{'path': error.json_path, 'location': list(error.path), 'value': error.instance,
+                 'status': 'response_schema_mismatch', 'detail': error.message} for error in unsupported]
 
     review = []
     for error in invalid:

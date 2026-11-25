@@ -70,7 +70,9 @@ class OcrEngine:
                 model=os.getenv('LLM_MODEL', 'scb10x/typhoon2.5-qwen3-4b'),
                 timeout=float(os.getenv('LLM_TIMEOUT_SECONDS', '120')),
                 num_ctx=int(os.getenv('LLM_NUM_CTX', '16384')),
-                num_predict=int(os.getenv('LLM_NUM_PREDICT', '4096')),
+                # Structured extraction from multi-page invoices can exceed 4K tokens;
+                # leave a usable default while retaining an env override for deployments.
+                num_predict=int(os.getenv('LLM_NUM_PREDICT', '8192')),
                 keep_alive=os.getenv('LLM_KEEP_ALIVE', '-1'),
             )
         self.llm_ready = False

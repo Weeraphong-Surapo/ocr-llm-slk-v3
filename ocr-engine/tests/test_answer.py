@@ -153,7 +153,8 @@ def test_structured_answer_preserves_ocr_rows_and_validates_items(monkeypatch):
         assert '"sources"' not in user_prompt
 
         invalid = submit(json.dumps(schema)).json()['answer']
-        assert invalid['content'] is None and invalid['error'] == 'response_schema_mismatch'
+        assert invalid['content'] == {'items': [item]} and invalid['error'] is None
+        assert invalid['review'][0]['status'] == 'response_schema_mismatch'
 
 
 @pytest.mark.parametrize(('first_price', 'second_price', 'second_rows', 'expected_price', 'retries'), [
