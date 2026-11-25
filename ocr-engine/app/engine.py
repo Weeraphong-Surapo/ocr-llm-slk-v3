@@ -222,7 +222,7 @@ class OcrEngine:
 
     def process(self, data: bytes, content_type: str, prompt: str = '', response_format: str = 'auto',
                 cancelled: Optional[threading.Event] = None,
-                response_schema: Optional[Dict[str, Any]] = None, mode: str = 'fast') -> Dict[str, Any]:
+                response_schema: Optional[Dict[str, Any]] = None, mode: str = 'standard') -> Dict[str, Any]:
         cancelled = cancelled if cancelled is not None else threading.Event()
         check_cancelled(cancelled)
         if not self.pipeline:

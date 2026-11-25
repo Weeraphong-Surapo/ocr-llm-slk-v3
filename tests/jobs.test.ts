@@ -173,7 +173,7 @@ describe('OCR job API', () => {
     expect((await (await app.request(`/api/v1/jobs/${id}`, { headers: { 'x-api-key': 'secret' } })).json()).data.mode).toBe('high_accuracy')
   })
 
-  it('defaults jobs to fast when mode is omitted', async () => {
+  it('defaults jobs to standard when mode is omitted', async () => {
     let seen: string | undefined
     const app = new Hono().route('/api/v1/jobs', createJobRoutes({
       ocrClient: { async process(input) { seen = input.mode; return { pages: [], text: '' } } }
@@ -183,7 +183,7 @@ describe('OCR job API', () => {
     body.append('prompt', 'อ่านข้อมูล')
     expect((await app.request('/api/v1/jobs', { method: 'POST', body })).status).toBe(202)
     await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(seen).toBe('fast')
+    expect(seen).toBe('standard')
   })
 
   it('allows a file-only fast OCR job without a prompt', async () => {
@@ -193,6 +193,7 @@ describe('OCR job API', () => {
     }))
     const body = new FormData()
     body.append('file', new File(['%PDF-1.7 x'], 'a.pdf', { type: 'application/pdf' }))
+    body.append('mode', 'fast')
     expect((await app.request('/api/v1/jobs', { method: 'POST', body })).status).toBe(202)
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(seenPrompt).toBe('')
