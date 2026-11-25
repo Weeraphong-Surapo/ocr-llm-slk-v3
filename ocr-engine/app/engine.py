@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import closing
 from typing import Any, Dict, List, Optional, Tuple
 
-from .answer import INVALID_DECIMAL, AnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
+from .answer import INVALID_DECIMAL, AnswerClient, DeepSeekAnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
 from .field_labels import identifier, verify_field_labels
@@ -78,6 +78,17 @@ class OcrEngine:
         self.llm_ready = False
         self.llm_error: Optional[str] = None if self.llm else 'LLM disabled'
         self._llm_loaded = threading.Event()
+        self._llm_lock = threading.Lock()
+        self.llm_lazy_load = _env_bool('LLM_LAZY_LOAD', False)
+        self.deepseek = None
+        deepseek_key = os.getenv('DEEPSEEK_API_KEY', '').strip()
+        if deepseek_key:
+            self.deepseek = DeepSeekAnswerClient(
+                api_key=deepseek_key,
+                model=os.getenv('DEEPSEEK_MODEL', 'deepseek-chat'),
+                timeout=float(os.getenv('DEEPSEEK_TIMEOUT_SECONDS', '120')),
+                base_url=os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com'),
+            )
         self._executor = ThreadPoolExecutor(max_workers=self.page_concurrency, thread_name_prefix='vlm')
 
     def load(self) -> None:
@@ -111,8 +122,26 @@ class OcrEngine:
     def _load_models(self) -> None:
         if self.vlm:
             self._load_vlm()
-        if self.llm:
+        if self.llm and not self.llm_lazy_load:
             self._load_llm()
+        elif self.llm:
+            self.llm_error = 'lazy'
+            self._llm_loaded.set()
+
+    def _ensure_local_llm(self) -> None:
+        if self.llm is None or self.llm_ready:
+            return
+        with self._llm_lock:
+            if self.llm_ready:
+                return
+            try:
+                self.llm_error = 'loading'
+                self.llm.ensure_model()
+                self.llm_ready = True
+                self.llm_error = None
+            except Exception as exc:
+                self.llm_error = f'{type(exc).__name__}: {exc}'
+                raise
 
     def _load_llm(self, attempts: int = 20, wait_seconds: float = 15) -> None:
         assert self.llm is not None
@@ -193,14 +222,21 @@ class OcrEngine:
 
     def process(self, data: bytes, content_type: str, prompt: str = '', response_format: str = 'auto',
                 cancelled: Optional[threading.Event] = None,
-                response_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                response_schema: Optional[Dict[str, Any]] = None, mode: str = 'standard') -> Dict[str, Any]:
         cancelled = cancelled if cancelled is not None else threading.Event()
         check_cancelled(cancelled)
         if not self.pipeline:
             raise RuntimeError(self.error or 'OCR model is not ready')
-        if self.vlm is not None and not self.vlm_ready and not self._vlm_loaded.is_set():
+        if mode not in {'fast', 'standard', 'high_accuracy'}:
+            raise ValueError('mode must be fast, standard or high_accuracy')
+        if mode != 'fast' and self.vlm is not None and not self.vlm_ready and not self._vlm_loaded.is_set():
             self._wait_for_model(self._vlm_loaded, cancelled)
-        use_vlm = self.vlm is not None and self.vlm_ready
+        use_vlm = mode != 'fast' and self.vlm is not None and self.vlm_ready
+        if mode == 'standard' and self.llm is not None and self.llm_lazy_load:
+            self._ensure_local_llm()
+        answer_client = self.deepseek if mode == 'high_accuracy' else self.llm if mode == 'standard' else None
+        answer_ready = bool(self.deepseek) if mode == 'high_accuracy' else self.llm_ready if mode == 'standard' else False
+        answer_error = None if self.deepseek else 'DEEPSEEK_API_KEY is not configured' if mode == 'high_accuracy' else self.llm_error
         pages, review = self._read_pages(data, content_type, use_vlm, cancelled)
         check_cancelled(cancelled)
         text = '\n\n'.join(page['text'] for page in pages if page['text'])
@@ -209,11 +245,12 @@ class OcrEngine:
             'text': text,
             'review': review,
             'engines': {'ocr': PADDLE_MODEL, 'vlm': self.vlm.model if use_vlm and self.vlm else None,
-                        'llm': self.llm.model if self.llm else None},
+                        'llm': answer_client.model if answer_client else None},
+            'mode': mode,
         }
-        if prompt.strip() and self.llm is not None:
+        if prompt.strip() and (answer_client is not None or mode == 'high_accuracy'):
             prompt = prompt.strip()
-            if not self.llm_ready and not self._llm_loaded.is_set():
+            if mode == 'standard' and not self.llm_ready and not self.llm_lazy_load and not self._llm_loaded.is_set():
                 self._wait_for_model(self._llm_loaded, cancelled)
             check_cancelled(cancelled)
             answer_text = text
@@ -228,13 +265,14 @@ class OcrEngine:
                             tables.extend(paddle_table_rows(page['lines'], spec, page['page_number']))
                         elif all(item['reason'] != 'vlm_output_truncated' for item in page['review']):
                             tables.extend(html_table_rows(page['text'], spec, page['page_number']))
-            answer = build_answer(self.llm, self.llm_ready, self.llm_error, prompt, response_format,
+            answer = build_answer(answer_client, answer_ready, answer_error, prompt, response_format,
                                   answer_text, review, cancelled=cancelled, response_schema=response_schema, item_tables=tables)
             if (response_schema is not None and use_vlm and self.vlm_mode == 'selective'
                     and content_type == 'application/pdf' and len(pages) == 1
                     and any(item['reason'] == 'vlm_skipped_selective' for item in pages[0]['review'])
                     and answer['error'] is None and any(item['status'] == INVALID_DECIMAL for item in answer['review'])):
                 note = self._retry_decimals(data, prompt, response_format, response_schema, answer,
+                                            answer_client,
                                             pages[0]['lines'], tables, cancelled)
                 pages[0]['review'].append(note)
                 review.append(note)
@@ -273,7 +311,7 @@ class OcrEngine:
         return value if identifier(value) else None
 
     def _retry_decimals(self, data: bytes, prompt: str, response_format: str, schema: Dict[str, Any],
-                        answer: Dict[str, Any], lines: list[dict[str, Any]], tables: list[list[TableRow]],
+                        answer: Dict[str, Any], answer_client: Any, lines: list[dict[str, Any]], tables: list[list[TableRow]],
                         cancelled: threading.Event) -> Dict[str, Any]:
         note = {'page_number': 1, 'text': None, 'reason': 'vlm_decimal_retry', 'similarity': None}
         spec = TableSpec.from_schema(schema)
@@ -304,10 +342,10 @@ class OcrEngine:
             outside = [line for line in lines if not line['bbox']
                        or not all(left <= x < right and top <= y < bottom for x, y in line['bbox'])]
             retry_text = f'{paddle_layout_text(outside)}\n\n<reread_table>\n{markdown}\n</reread_table>'
-        retry = build_answer(self.llm, self.llm_ready, self.llm_error, prompt, response_format, retry_text,
+        retry = build_answer(answer_client, bool(answer_client), None, prompt, response_format, retry_text,
                              [], cancelled=cancelled, response_schema=schema, item_tables=retry_tables)
-        if spec is not None and self.llm is not None:
-            interpret_item_cells(self.llm, prompt, retry_text, schema, answer, retry, spec, retry_tables, cancelled)
+        if spec is not None and answer_client is not None:
+            interpret_item_cells(answer_client, prompt, retry_text, schema, answer, retry, spec, retry_tables, cancelled)
         recover_decimal_fields(answer, retry, markdown, schema, tables, retry_tables)
         return note
 

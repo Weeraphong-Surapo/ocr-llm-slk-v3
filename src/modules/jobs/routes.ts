@@ -4,10 +4,11 @@ import { maxUploadBytes } from '../../config/env.js'
 import { sniffFileType } from '../../lib/file-type.js'
 import { failure, success } from '../../lib/response.js'
 import { InlineQueue, type OcrClient } from './queue.js'
-import { MemoryJobStore, type JobStore } from './store.js'
+import { MemoryJobStore, type JobStore, type OcrMode } from './store.js'
 
 const promptSchema = z.string().trim().min(1).max(20_000)
 const responseFormatSchema = z.enum(['auto', 'json', 'text']).default('auto')
+const modeSchema = z.enum(['fast', 'standard', 'high_accuracy']).default('standard')
 const responseSchemaShape = z.object({ type: z.literal('object'), properties: z.record(z.unknown()) })
 
 export type JobRouteDeps = { store?: JobStore; ocrClient: OcrClient; concurrency?: number }
@@ -33,6 +34,8 @@ export function createJobRoutes(deps: JobRouteDeps) {
     const typedFile = detectedType === file.type ? file : new File([file], name, { type: detectedType })
     const parsedFormat = responseFormatSchema.safeParse(typeof body.response_format === 'string' && body.response_format ? body.response_format : undefined)
     if (!parsedFormat.success) return c.json(failure('INVALID_RESPONSE_FORMAT', 'response_format must be auto, json or text'), 422)
+    const parsedMode = modeSchema.safeParse(typeof body.mode === 'string' && body.mode ? body.mode : undefined)
+    if (!parsedMode.success) return c.json(failure('INVALID_MODE', 'mode must be fast, standard or high_accuracy'), 422)
     let responseSchema: string | undefined
     if (body.response_schema !== undefined) {
       const raw = body.response_schema
@@ -51,7 +54,7 @@ export function createJobRoutes(deps: JobRouteDeps) {
     }
     const job = store.create({
       filename: name, mime_type: detectedType, prompt: parsedPrompt.data,
-      response_format: responseSchema ? 'json' : parsedFormat.data,
+      response_format: responseSchema ? 'json' : parsedFormat.data, mode: parsedMode.data as OcrMode,
     })
     queue.enqueue(job, typedFile, deps.ocrClient, responseSchema)
     return c.json(success({ job_id: job.id, status: job.status }), 202)

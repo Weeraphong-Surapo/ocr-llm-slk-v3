@@ -41,7 +41,7 @@ services:
       CUDA_VISIBLE_DEVICES: "0"
       OCR_DEVICE: gpu:0
       OCR_MAX_PAGES: ${OCR_MAX_PAGES:-50}
-      OCR_PAGE_CONCURRENCY: ${OCR_PAGE_CONCURRENCY:-2}
+      OCR_PAGE_CONCURRENCY: ${OCR_PAGE_CONCURRENCY:-1}
       OCR_UPSCALE_MIN_LONG_SIDE: ${OCR_UPSCALE_MIN_LONG_SIDE:-2000}
       OCR_UPSCALE_MAX_FACTOR: ${OCR_UPSCALE_MAX_FACTOR:-4}
       VLM_ENABLED: ${VLM_ENABLED:-true}
@@ -65,6 +65,11 @@ services:
       LLM_NUM_PREDICT: ${LLM_NUM_PREDICT:-4096}
       LLM_KEEP_ALIVE: ${LLM_KEEP_ALIVE:--1}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+      LLM_LAZY_LOAD: ${LLM_LAZY_LOAD:-true}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_TIMEOUT_SECONDS: ${DEEPSEEK_TIMEOUT_SECONDS:-120}
     expose:
       - "8001"
     depends_on:
@@ -90,8 +95,8 @@ services:
     image: ollama/ollama:0.40.16
     restart: unless-stopped
     environment:
-      OLLAMA_KEEP_ALIVE: "-1"
-      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_KEEP_ALIVE: "10m"
+      OLLAMA_NUM_PARALLEL: "1"
       # Keep both OCR and answer models resident for lowest latency. Reduce to 1
       # only if production peak VRAM shows OOM or excessive memory pressure.
       OLLAMA_MAX_LOADED_MODELS: "2"

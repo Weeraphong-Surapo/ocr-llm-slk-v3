@@ -157,6 +157,22 @@ describe('OCR job API', () => {
     expect(doc.paths['/health'].get.security).toBeUndefined()
   })
 
+  it('accepts and forwards the OCR mode', async () => {
+    let seen: string | undefined
+    const capturing: OcrClient = { async process(input) { seen = input.mode; return { pages: [], text: '' } } }
+    const app = createApp(capturing, { apiKey: 'secret' })
+    const body = new FormData()
+    body.append('file', new File(['%PDF-1.7 x'], 'a.pdf', { type: 'application/pdf' }))
+    body.append('prompt', 'อ่านข้อมูล')
+    body.append('mode', 'high_accuracy')
+    const response = await app.request('/api/v1/jobs', { method: 'POST', body, headers: { 'x-api-key': 'secret' } })
+    expect(response.status).toBe(202)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(seen).toBe('high_accuracy')
+    const id = (await response.json()).data.job_id
+    expect((await (await app.request(`/api/v1/jobs/${id}`, { headers: { 'x-api-key': 'secret' } })).json()).data.mode).toBe('high_accuracy')
+  })
+
   it('removes a queued job and holds the running job slot until cancellation finishes', async () => {
     const processed: string[] = []
     let activeSignal: AbortSignal | undefined

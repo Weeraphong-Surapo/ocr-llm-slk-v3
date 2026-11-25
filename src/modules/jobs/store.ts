@@ -19,6 +19,7 @@ export type OcrPage = {
 }
 
 export type ResponseFormat = 'auto' | 'json' | 'text'
+export type OcrMode = 'fast' | 'standard' | 'high_accuracy'
 
 export type AnswerReviewItem = {
   path: string
@@ -48,6 +49,7 @@ export type Answer = {
 }
 
 export type OcrResult = {
+  mode?: OcrMode
   pages: OcrPage[]
   text: string
   review?: ReviewItem[]
@@ -62,6 +64,7 @@ export type Job = {
   mime_type: string
   prompt: string
   response_format: ResponseFormat
+  mode: OcrMode
   created_at: string
   updated_at: string
   result?: OcrResult
@@ -69,7 +72,7 @@ export type Job = {
 }
 
 export interface JobStore {
-  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt' | 'response_format'>): Job
+  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt' | 'response_format' | 'mode'>): Job
   get(id: string): Job | undefined
   update(id: string, patch: Partial<Job>): Job | undefined
 }
@@ -77,7 +80,7 @@ export interface JobStore {
 export class MemoryJobStore implements JobStore {
   private readonly jobs = new Map<string, Job>()
 
-  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt' | 'response_format'>): Job {
+  create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt' | 'response_format' | 'mode'>): Job {
     const now = new Date().toISOString()
     const job: Job = { id: crypto.randomUUID(), status: 'queued', ...input, created_at: now, updated_at: now }
     this.jobs.set(job.id, job)
