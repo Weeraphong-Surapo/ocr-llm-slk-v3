@@ -8,7 +8,7 @@ import { MemoryJobStore, type JobStore, type OcrMode } from './store.js'
 
 const promptSchema = z.string().trim().min(1).max(20_000)
 const responseFormatSchema = z.enum(['auto', 'json', 'text']).default('auto')
-const modeSchema = z.enum(['fast', 'standard', 'high_accuracy']).default('high_accuracy')
+const modeSchema = z.enum(['fast', 'standard', 'high_accuracy']).default('fast')
 const responseSchemaShape = z.object({ type: z.literal('object'), properties: z.record(z.unknown()) })
 
 export type JobRouteDeps = { store?: JobStore; ocrClient: OcrClient; concurrency?: number }

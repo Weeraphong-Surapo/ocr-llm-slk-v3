@@ -173,7 +173,7 @@ describe('OCR job API', () => {
     expect((await (await app.request(`/api/v1/jobs/${id}`, { headers: { 'x-api-key': 'secret' } })).json()).data.mode).toBe('high_accuracy')
   })
 
-  it('defaults jobs to high_accuracy when mode is omitted', async () => {
+  it('defaults jobs to fast when mode is omitted', async () => {
     let seen: string | undefined
     const app = new Hono().route('/api/v1/jobs', createJobRoutes({
       ocrClient: { async process(input) { seen = input.mode; return { pages: [], text: '' } } }
@@ -183,7 +183,7 @@ describe('OCR job API', () => {
     body.append('prompt', 'อ่านข้อมูล')
     expect((await app.request('/api/v1/jobs', { method: 'POST', body })).status).toBe(202)
     await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(seen).toBe('high_accuracy')
+    expect(seen).toBe('fast')
   })
 
   it('removes a queued job and holds the running job slot until cancellation finishes', async () => {
