@@ -1,10 +1,11 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import type { Job, JobStore, OcrResult, ResponseFormat } from './store.js'
+import type { Job, JobStore, OcrMode, OcrResult, ResponseFormat } from './store.js'
 
 type OcrInput = {
   file: File
   prompt: string
   responseFormat?: ResponseFormat
+  mode?: OcrMode
   responseSchema?: string
   jobId?: string
   signal?: AbortSignal
@@ -43,13 +44,13 @@ export class InlineQueue {
   private async drain() {
     while (this.active.size < this.concurrency && this.pending.length) {
       const item = this.pending.shift()!
-      const { id, prompt, response_format: responseFormat } = item.job
+      const { id, prompt, response_format: responseFormat, mode } = item.job
       const controller = new AbortController()
       this.active.set(id, controller)
       this.store.update(id, { status: 'processing' })
       try {
         const result = await item.client.process({
-          file: item.file, prompt, responseFormat, responseSchema: item.responseSchema, jobId: id, signal: controller.signal,
+          file: item.file, prompt, responseFormat, responseSchema: item.responseSchema, jobId: id, signal: controller.signal, mode,
         })
         this.store.update(id, controller.signal.aborted ? { status: 'cancelled' } : { status: 'completed', result })
       } catch (error) {
@@ -77,6 +78,7 @@ export class HttpOcrClient implements OcrClient {
     body.append('file', input.file, input.file.name || 'upload')
     body.append('prompt', input.prompt)
     body.append('response_format', input.responseFormat ?? 'auto')
+    body.append('mode', input.mode ?? 'standard')
     if (input.responseSchema !== undefined) body.append('response_schema', input.responseSchema)
     const finished = new AbortController()
     const requestCancellation = () => {
