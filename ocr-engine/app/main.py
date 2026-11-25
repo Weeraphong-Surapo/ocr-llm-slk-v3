@@ -65,7 +65,7 @@ def gpu_health() -> Dict[str, Any]:
 @app.post('/ocr')
 async def ocr(request: Request, file: UploadFile = File(...), prompt: str = Form(''), response_format: str = Form('auto'),
               response_schema: Optional[str] = Form(None),
-              mode: str = Form('standard'),
+              mode: str = Form('high_accuracy'),
               job_id: Optional[UUID] = Header(None, alias='X-OCR-Job-Id')) -> Dict[str, Any]:
     if response_format not in ('auto', 'json', 'text'):
         raise HTTPException(status_code=422, detail='response_format must be auto, json or text')

@@ -78,7 +78,7 @@ export class HttpOcrClient implements OcrClient {
     body.append('file', input.file, input.file.name || 'upload')
     body.append('prompt', input.prompt)
     body.append('response_format', input.responseFormat ?? 'auto')
-    body.append('mode', input.mode ?? 'standard')
+    body.append('mode', input.mode ?? 'high_accuracy')
     if (input.responseSchema !== undefined) body.append('response_schema', input.responseSchema)
     const finished = new AbortController()
     const requestCancellation = () => {
