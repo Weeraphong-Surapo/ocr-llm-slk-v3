@@ -26,9 +26,6 @@ export function createJobRoutes(deps: JobRouteDeps) {
     const detectedType = sniffFileType(new Uint8Array(await file.slice(0, 16).arrayBuffer()))
     if (!detectedType) return c.json(failure('UNSUPPORTED_FILE', 'Only PDF/PNG/JPEG/WebP are accepted'), 422)
     if (file.size > maxUploadBytes) return c.json(failure('FILE_TOO_LARGE', `Maximum upload is ${maxUploadBytes / 1024 / 1024} MB`), 413)
-    const parsedPrompt = promptSchema.safeParse(typeof prompt === 'string' ? prompt : '')
-    if (!parsedPrompt.success) return c.json(failure('INVALID_PROMPT', 'prompt is required and must be <= 20,000 chars'), 422)
-
     // Use the type found in the file's bytes, e.g. a PDF uploaded as image/png is processed as a PDF.
     const name = file.name || 'upload'
     const typedFile = detectedType === file.type ? file : new File([file], name, { type: detectedType })
@@ -36,6 +33,14 @@ export function createJobRoutes(deps: JobRouteDeps) {
     if (!parsedFormat.success) return c.json(failure('INVALID_RESPONSE_FORMAT', 'response_format must be auto, json or text'), 422)
     const parsedMode = modeSchema.safeParse(typeof body.mode === 'string' && body.mode ? body.mode : undefined)
     if (!parsedMode.success) return c.json(failure('INVALID_MODE', 'mode must be fast, standard or high_accuracy'), 422)
+    const rawPrompt = typeof prompt === 'string' ? prompt : ''
+    const parsedPrompt = promptSchema.safeParse(rawPrompt)
+    if (parsedMode.data !== 'fast' && !parsedPrompt.success) {
+      return c.json(failure('INVALID_PROMPT', 'prompt is required and must be <= 20,000 chars'), 422)
+    }
+    if (parsedMode.data === 'fast' && rawPrompt.length > 20_000) {
+      return c.json(failure('INVALID_PROMPT', 'prompt must be <= 20,000 chars'), 422)
+    }
     let responseSchema: string | undefined
     if (body.response_schema !== undefined) {
       const raw = body.response_schema
@@ -53,7 +58,7 @@ export function createJobRoutes(deps: JobRouteDeps) {
       responseSchema = raw
     }
     const job = store.create({
-      filename: name, mime_type: detectedType, prompt: parsedPrompt.data,
+      filename: name, mime_type: detectedType, prompt: parsedPrompt.success ? parsedPrompt.data : rawPrompt.trim(),
       response_format: responseSchema ? 'json' : parsedFormat.data, mode: parsedMode.data as OcrMode,
     })
     queue.enqueue(job, typedFile, deps.ocrClient, responseSchema)
