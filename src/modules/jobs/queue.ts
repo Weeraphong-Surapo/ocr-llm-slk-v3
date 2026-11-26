@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import type { Job, JobStore, OcrMode, OcrResult, ResponseFormat } from './store.js'
+import type { Job, JobProgress, JobStore, OcrMode, OcrResult, ResponseFormat } from './store.js'
 
 type OcrInput = {
   file: File
@@ -9,6 +9,7 @@ type OcrInput = {
   responseSchema?: string
   jobId?: string
   signal?: AbortSignal
+  onProgress?: (progress: JobProgress) => void
 }
 
 export interface OcrClient {
@@ -47,12 +48,15 @@ export class InlineQueue {
       const { id, prompt, response_format: responseFormat, mode } = item.job
       const controller = new AbortController()
       this.active.set(id, controller)
-      this.store.update(id, { status: 'processing' })
+      this.store.update(id, { status: 'processing', progress: { stage: 'starting', processed_pages: 0, total_pages: null } })
       try {
         const result = await item.client.process({
           file: item.file, prompt, responseFormat, responseSchema: item.responseSchema, jobId: id, signal: controller.signal, mode,
+          onProgress: (progress) => { this.store.update(id, { progress }) },
         })
-        this.store.update(id, controller.signal.aborted ? { status: 'cancelled' } : { status: 'completed', result })
+        this.store.update(id, controller.signal.aborted ? { status: 'cancelled' } : {
+          status: 'completed', result, progress: { stage: 'completed', processed_pages: result.pages.length, total_pages: result.pages.length }
+        })
       } catch (error) {
         if (controller.signal.aborted && error === controller.signal.reason) {
           this.store.update(id, { status: 'cancelled' })
@@ -85,10 +89,14 @@ export class HttpOcrClient implements OcrClient {
       if (input.jobId) void this.cancelInEngine(input.jobId, finished.signal)
     }
     input.signal?.addEventListener('abort', requestCancellation, { once: true })
+    const headers = input.jobId ? { 'X-OCR-Job-Id': input.jobId } : undefined
+    const inference = fetch(`${this.baseUrl}/ocr`, { method: 'POST', headers, body })
+    const progressPolling = input.jobId && input.onProgress
+      ? this.pollProgress(input.jobId, input.onProgress, finished.signal)
+      : undefined
     try {
-      const headers = input.jobId ? { 'X-OCR-Job-Id': input.jobId } : undefined
       // Keep the request open and retain the queue slot until the engine has stopped using it.
-      const response = await fetch(`${this.baseUrl}/ocr`, { method: 'POST', headers, body })
+      const response = await inference
       if (input.signal?.aborted) {
         await response.body?.cancel().catch(() => {})
         input.signal.throwIfAborted()
@@ -101,6 +109,22 @@ export class HttpOcrClient implements OcrClient {
     } finally {
       input.signal?.removeEventListener('abort', requestCancellation)
       finished.abort()
+      await progressPolling?.catch(() => {})
+    }
+  }
+
+  private async pollProgress(jobId: string, onProgress: (progress: JobProgress) => void, finished: AbortSignal): Promise<void> {
+    while (!finished.aborted) {
+      try {
+        const response = await fetch(`${this.baseUrl}/ocr/${encodeURIComponent(jobId)}/progress`, {
+          signal: AbortSignal.any([finished, AbortSignal.timeout(2_000)])
+        })
+        if (response.ok) onProgress(await response.json() as JobProgress)
+        else await response.body?.cancel()
+      } catch {
+        // The engine registers the job after accepting the multipart upload; retry while it runs.
+      }
+      await delay(500, undefined, { signal: finished }).catch(() => {})
     }
   }
 
