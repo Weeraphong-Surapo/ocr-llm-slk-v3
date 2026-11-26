@@ -38,13 +38,6 @@ def render_pdf_pages(data: bytes, max_pages: int) -> Iterable[np.ndarray]:
     finally:
         document.close()
 
-
-def pdf_page_count(data: bytes, max_pages: int) -> int:
-    with fitz.open(stream=data, filetype='pdf') as document:
-        if document.page_count > max_pages:
-            raise ValueError(f'PDF exceeds maximum page count of {max_pages}')
-        return document.page_count
-
 def render_pdf_field(data: bytes, page_number: int, box: tuple[float, float, float, float]) -> np.ndarray:
     left, top, right, bottom = box
     margin = (bottom - top) / 3

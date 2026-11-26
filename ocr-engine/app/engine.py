@@ -5,14 +5,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import closing
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .answer import INVALID_DECIMAL, AnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
 from .field_labels import identifier, verify_field_labels
 from .item_table import TableRow, TableSpec, html_table_rows, item_table_crop, paddle_table_rows
-from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, pdf_page_count, render_pdf_field, render_pdf_pages, scale_bbox, upscale_small_image
+from .ocr_pipeline import decode_image, normalize_result, paddle_layout_text, render_pdf_field, render_pdf_pages, scale_bbox, upscale_small_image
 from .vlm import VlmClient, prepare_vlm_image
 
 PADDLE_MODEL = 'PP-OCRv5_mobile_det + th_PP-OCRv5_mobile_rec'
@@ -213,8 +213,7 @@ class OcrEngine:
 
     def process(self, data: bytes, content_type: str, prompt: str = '', response_format: str = 'auto',
                 cancelled: Optional[threading.Event] = None,
-                response_schema: Optional[Dict[str, Any]] = None, mode: str = 'standard',
-                on_progress: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+                response_schema: Optional[Dict[str, Any]] = None, mode: str = 'standard') -> Dict[str, Any]:
         cancelled = cancelled if cancelled is not None else threading.Event()
         check_cancelled(cancelled)
         if not self.pipeline:
@@ -229,7 +228,7 @@ class OcrEngine:
         answer_client = self.llm if mode == 'standard' else None
         answer_ready = self.llm_ready if mode == 'standard' else False
         answer_error = self.llm_error
-        pages, review = self._read_pages(data, content_type, use_vlm, cancelled, on_progress=on_progress)
+        pages, review = self._read_pages(data, content_type, use_vlm, cancelled)
         check_cancelled(cancelled)
         text = '\n\n'.join(page['text'] for page in pages if page['text'])
         result: Dict[str, Any] = {
@@ -241,8 +240,6 @@ class OcrEngine:
             'mode': mode,
         }
         if prompt.strip() and answer_client is not None:
-            if on_progress is not None:
-                on_progress({'stage': 'answering', 'processed_pages': len(pages), 'total_pages': len(pages)})
             prompt = prompt.strip()
             if mode == 'standard' and not self.llm_ready and not self.llm_lazy_load and not self._llm_loaded.is_set():
                 self._wait_for_model(self._llm_loaded, cancelled)
@@ -344,14 +341,10 @@ class OcrEngine:
         return note
 
     def _read_pages(self, data: bytes, content_type: str, use_vlm: bool,
-                    cancelled: threading.Event, on_progress: Optional[Callable[[Dict[str, Any]], None]] = None
-                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+                    cancelled: threading.Event) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         pages: List[Dict[str, Any]] = []
         review: List[Dict[str, Any]] = []
         is_pdf = content_type == 'application/pdf'
-        total_pages = pdf_page_count(data, self.max_pages) if is_pdf else 1
-        if on_progress is not None:
-            on_progress({'stage': 'ocr', 'processed_pages': 0, 'total_pages': total_pages})
         inputs = render_pdf_pages(data, self.max_pages) if is_pdf else [decode_image(data)]
         page_jobs = []
         try:
@@ -360,15 +353,11 @@ class OcrEngine:
                 check_cancelled(cancelled)
                 lines = self._read_with_paddle(image, upscale=not is_pdf)
                 check_cancelled(cancelled)
-                if on_progress is not None:
-                    on_progress({'stage': 'ocr', 'processed_pages': page_number, 'total_pages': total_pages})
                 paddle_text = '\n'.join(line['text'] for line in lines if line['text'])
                 use_vlm_for_page = use_vlm and self._should_use_vlm(lines, paddle_text, is_pdf)
                 vlm_future = self._executor.submit(self._read_with_vlm, image, cancelled) if use_vlm_for_page else None
                 page_jobs.append((page_number, lines, paddle_text, vlm_future, use_vlm_for_page))
 
-            if on_progress is not None:
-                on_progress({'stage': 'reviewing', 'processed_pages': total_pages, 'total_pages': total_pages})
             for page_number, lines, paddle_text, vlm_future, use_vlm_for_page in page_jobs:
                 check_cancelled(cancelled)
                 page_review: List[Dict[str, Any]] = []

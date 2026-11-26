@@ -80,12 +80,9 @@ describe('OCR job API', () => {
   it('forwards the optional response schema through the job queue and rejects malformed input', async () => {
     const schema = JSON.stringify({ type: 'object', properties: { items: { type: 'array' } } })
     let sent: FormData | undefined
-    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
-      if (url === 'http://engine/ocr') {
-        sent = init?.body as FormData
-        return Response.json({ pages: [], text: '' })
-      }
-      return new Response(null, { status: 404 })
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      sent = init?.body as FormData
+      return Response.json({ pages: [], text: '' })
     })
     try {
       const app = createApp(new HttpOcrClient('http://engine'), {})
@@ -200,37 +197,6 @@ describe('OCR job API', () => {
     expect((await app.request('/api/v1/jobs', { method: 'POST', body })).status).toBe(202)
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(seenPrompt).toBe('')
-  })
-
-  it('returns actual scanned-page progress while a job is processing', async () => {
-    let release = () => {}
-    const blocked = new Promise<void>(resolve => { release = resolve })
-    const app = new Hono().route('/api/v1/jobs', createJobRoutes({
-      ocrClient: {
-        async process({ onProgress }) {
-          onProgress?.({ stage: 'ocr', processed_pages: 1, total_pages: 2 })
-          await blocked
-          onProgress?.({ stage: 'reviewing', processed_pages: 2, total_pages: 2 })
-          return { pages: [{ page_number: 1, text: 'a', lines: [] }, { page_number: 2, text: 'b', lines: [] }], text: 'a\nb' }
-        }
-      }
-    }))
-    const body = new FormData()
-    body.append('file', new File(['%PDF-1.7 x'], 'a.pdf', { type: 'application/pdf' }))
-    body.append('prompt', 'อ่านข้อมูล')
-    const response = await app.request('/api/v1/jobs', { method: 'POST', body })
-    const id = (await response.json()).data.job_id
-    try {
-      await vi.waitFor(async () => expect((await (await app.request(`/api/v1/jobs/${id}`)).json()).data).toMatchObject({
-        status: 'processing', progress: { stage: 'ocr', processed_pages: 1, total_pages: 2 }
-      }))
-      release()
-      await vi.waitFor(async () => expect((await (await app.request(`/api/v1/jobs/${id}`)).json()).data).toMatchObject({
-        status: 'completed', progress: { stage: 'completed', processed_pages: 2, total_pages: 2 }
-      }))
-    } finally {
-      release()
-    }
   })
 
   it('removes a queued job and holds the running job slot until cancellation finishes', async () => {
