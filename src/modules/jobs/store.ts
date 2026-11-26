@@ -20,6 +20,11 @@ export type OcrPage = {
 
 export type ResponseFormat = 'auto' | 'json' | 'text'
 export type OcrMode = 'fast' | 'standard'
+export type JobProgress = {
+  stage: 'queued' | 'starting' | 'ocr' | 'reviewing' | 'answering' | 'completed'
+  processed_pages: number
+  total_pages: number | null
+}
 
 export type AnswerReviewItem = {
   path: string
@@ -65,6 +70,7 @@ export type Job = {
   prompt: string
   response_format: ResponseFormat
   mode: OcrMode
+  progress: JobProgress
   created_at: string
   updated_at: string
   result?: OcrResult
@@ -82,7 +88,11 @@ export class MemoryJobStore implements JobStore {
 
   create(input: Pick<Job, 'filename' | 'mime_type' | 'prompt' | 'response_format' | 'mode'>): Job {
     const now = new Date().toISOString()
-    const job: Job = { id: crypto.randomUUID(), status: 'queued', ...input, created_at: now, updated_at: now }
+    const job: Job = {
+      id: crypto.randomUUID(), status: 'queued', ...input,
+      progress: { stage: 'queued', processed_pages: 0, total_pages: null },
+      created_at: now, updated_at: now
+    }
     this.jobs.set(job.id, job)
     return job
   }

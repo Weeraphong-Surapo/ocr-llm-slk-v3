@@ -15,7 +15,7 @@ from .response_schema import parse_response_schema
 
 app = FastAPI(title='OCR Engine', version='0.1.0')
 engine = OcrEngine()
-active_jobs: Dict[UUID, Event] = {}
+active_jobs: Dict[UUID, Dict[str, Any]] = {}
 
 
 @app.on_event('startup')
@@ -80,14 +80,19 @@ async def ocr(request: Request, file: UploadFile = File(...), prompt: str = Form
     if content_type is None:
         raise HTTPException(status_code=422, detail='Unsupported file type (expected PDF, PNG, JPEG or WebP content)')
     cancelled = Event()
+    job_state: Optional[Dict[str, Any]] = None
     if job_id is not None:
         if job_id in active_jobs:
             raise HTTPException(status_code=409, detail='OCR job is already running')
-        active_jobs[job_id] = cancelled
+        job_state = {'cancelled': cancelled, 'progress': {'stage': 'starting', 'processed_pages': 0, 'total_pages': None}}
+        active_jobs[job_id] = job_state
+    def report_progress(progress: Dict[str, Any]) -> None:
+        if job_state is not None:
+            job_state['progress'] = progress
     disconnect = asyncio.create_task(cancel_on_disconnect(request, cancelled))
     try:
         # Typhoon takes seconds per page; keep the event loop free so /health stays responsive.
-        return await run_in_threadpool(engine.process, data, content_type, prompt, response_format, cancelled, schema, mode)
+        return await run_in_threadpool(engine.process, data, content_type, prompt, response_format, cancelled, schema, mode, report_progress)
     except OcrCancelled as exc:
         raise HTTPException(status_code=409, detail='OCR job was cancelled') from exc
     except ValueError as exc:
@@ -111,8 +116,16 @@ async def cancel_on_disconnect(request: Request, cancelled: Event) -> None:
 
 @app.post('/ocr/{job_id}/cancel', status_code=202)
 async def cancel_ocr(job_id: UUID) -> Dict[str, str]:
-    cancelled = active_jobs.get(job_id)
-    if cancelled is None:
+    state = active_jobs.get(job_id)
+    if state is None:
         raise HTTPException(status_code=404, detail='OCR job is not running')
-    cancelled.set()
+    state['cancelled'].set()
     return {'status': 'cancelling'}
+
+
+@app.get('/ocr/{job_id}/progress')
+async def ocr_progress(job_id: UUID) -> Dict[str, Any]:
+    state = active_jobs.get(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail='OCR job is not running')
+    return state['progress']
