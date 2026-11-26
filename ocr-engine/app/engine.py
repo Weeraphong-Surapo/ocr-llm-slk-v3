@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import closing
 from typing import Any, Dict, List, Optional, Tuple
 
-from .answer import INVALID_DECIMAL, AnswerClient, DeepSeekAnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
+from .answer import INVALID_DECIMAL, AnswerClient, build_answer, interpret_item_cells, recover_decimal_fields
 from .cancellation import OcrCancelled, check_cancelled
 from .crosscheck import find_missing, find_suspicious
 from .field_labels import identifier, verify_field_labels
@@ -80,15 +80,6 @@ class OcrEngine:
         self._llm_loaded = threading.Event()
         self._llm_lock = threading.Lock()
         self.llm_lazy_load = _env_bool('LLM_LAZY_LOAD', False)
-        self.deepseek = None
-        deepseek_key = os.getenv('DEEPSEEK_API_KEY', '').strip()
-        if deepseek_key:
-            self.deepseek = DeepSeekAnswerClient(
-                api_key=deepseek_key,
-                model=os.getenv('DEEPSEEK_MODEL', 'deepseek-chat'),
-                timeout=float(os.getenv('DEEPSEEK_TIMEOUT_SECONDS', '120')),
-                base_url=os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com'),
-            )
         self._executor = ThreadPoolExecutor(max_workers=self.page_concurrency, thread_name_prefix='vlm')
 
     def load(self) -> None:
@@ -227,16 +218,16 @@ class OcrEngine:
         check_cancelled(cancelled)
         if not self.pipeline:
             raise RuntimeError(self.error or 'OCR model is not ready')
-        if mode not in {'fast', 'standard', 'high_accuracy'}:
-            raise ValueError('mode must be fast, standard or high_accuracy')
+        if mode not in {'fast', 'standard'}:
+            raise ValueError('mode must be fast or standard')
         if mode != 'fast' and self.vlm is not None and not self.vlm_ready and not self._vlm_loaded.is_set():
             self._wait_for_model(self._vlm_loaded, cancelled)
         use_vlm = mode != 'fast' and self.vlm is not None and self.vlm_ready
         if mode == 'standard' and self.llm is not None and self.llm_lazy_load:
             self._ensure_local_llm()
-        answer_client = self.deepseek if mode == 'high_accuracy' else self.llm if mode == 'standard' else None
-        answer_ready = bool(self.deepseek) if mode == 'high_accuracy' else self.llm_ready if mode == 'standard' else False
-        answer_error = None if self.deepseek else 'DEEPSEEK_API_KEY is not configured' if mode == 'high_accuracy' else self.llm_error
+        answer_client = self.llm if mode == 'standard' else None
+        answer_ready = self.llm_ready if mode == 'standard' else False
+        answer_error = self.llm_error
         pages, review = self._read_pages(data, content_type, use_vlm, cancelled)
         check_cancelled(cancelled)
         text = '\n\n'.join(page['text'] for page in pages if page['text'])
@@ -248,7 +239,7 @@ class OcrEngine:
                         'llm': answer_client.model if answer_client else None},
             'mode': mode,
         }
-        if prompt.strip() and (answer_client is not None or mode == 'high_accuracy'):
+        if prompt.strip() and answer_client is not None:
             prompt = prompt.strip()
             if mode == 'standard' and not self.llm_ready and not self.llm_lazy_load and not self._llm_loaded.is_set():
                 self._wait_for_model(self._llm_loaded, cancelled)

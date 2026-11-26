@@ -8,7 +8,7 @@ import { MemoryJobStore, type JobStore, type OcrMode } from './store.js'
 
 const promptSchema = z.string().trim().min(1).max(20_000)
 const responseFormatSchema = z.enum(['auto', 'json', 'text']).default('auto')
-const modeSchema = z.enum(['fast', 'standard', 'high_accuracy']).default('standard')
+const modeSchema = z.enum(['fast', 'standard']).default('standard')
 const responseSchemaShape = z.object({ type: z.literal('object'), properties: z.record(z.unknown()) })
 
 export type JobRouteDeps = { store?: JobStore; ocrClient: OcrClient; concurrency?: number }
@@ -32,12 +32,10 @@ export function createJobRoutes(deps: JobRouteDeps) {
     const parsedFormat = responseFormatSchema.safeParse(typeof body.response_format === 'string' && body.response_format ? body.response_format : undefined)
     if (!parsedFormat.success) return c.json(failure('INVALID_RESPONSE_FORMAT', 'response_format must be auto, json or text'), 422)
     const parsedMode = modeSchema.safeParse(typeof body.mode === 'string' && body.mode ? body.mode : undefined)
-    if (!parsedMode.success) return c.json(failure('INVALID_MODE', 'mode must be fast, standard or high_accuracy'), 422)
+    if (!parsedMode.success) return c.json(failure('INVALID_MODE', 'mode must be fast or standard'), 422)
     const rawPrompt = typeof prompt === 'string' ? prompt : ''
     const parsedPrompt = promptSchema.safeParse(rawPrompt)
-    if (parsedMode.data !== 'fast' && !parsedPrompt.success) {
-      return c.json(failure('INVALID_PROMPT', 'prompt is required and must be <= 20,000 chars'), 422)
-    }
+    if (parsedMode.data === 'standard' && !parsedPrompt.success) return c.json(failure('INVALID_PROMPT', 'prompt is required and must be <= 20,000 chars'), 422)
     if (parsedMode.data === 'fast' && rawPrompt.length > 20_000) {
       return c.json(failure('INVALID_PROMPT', 'prompt must be <= 20,000 chars'), 422)
     }

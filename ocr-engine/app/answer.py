@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-import httpx
 from html import unescape
 from threading import Event
 from typing import Any, Dict, List, Optional, Tuple
@@ -140,38 +139,6 @@ class AnswerClient:
         content = str((data.get('message') or {}).get('content', ''))
         content = _THINK.sub('', content).strip()
         return content, str(data.get('done_reason', ''))
-
-
-class DeepSeekAnswerClient(AnswerClient):
-    """OpenAI-compatible DeepSeek client used only by the high-accuracy mode."""
-
-    def __init__(self, api_key: str, model: str, timeout: float, base_url: str = 'https://api.deepseek.com') -> None:
-        super().__init__(base_url, model, timeout, 16384, 4096, '0', post=self._deepseek_post)
-        self.api_key = api_key
-        self.base_url = base_url.rstrip('/')
-
-    def ensure_model(self, pull_timeout: float = 1800) -> None:
-        # The remote provider owns model loading; avoid a startup API call.
-        return
-
-    def _deepseek_post(self, path: str, payload: Dict[str, Any], timeout: float,
-                       cancelled: Optional[Event] = None) -> Dict[str, Any]:
-        request = dict(payload)
-        options = request.pop('options', {})
-        request.pop('keep_alive', None)
-        request.pop('format', None)
-        request['temperature'] = options.get('temperature', 0)
-        request['max_tokens'] = options.get('num_predict', 4096)
-        if 'format' in payload:
-            request['response_format'] = {'type': 'json_object'}
-        headers = {'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'}
-        response = httpx.post(f'{self.base_url}/chat/completions', json=request, headers=headers, timeout=timeout)
-        if not response.is_success:
-            raise RuntimeError(f'DeepSeek returned HTTP {response.status_code}: {response.text[:300]}')
-        data = response.json()
-        choice = (data.get('choices') or [{}])[0]
-        message = choice.get('message') or {}
-        return {'message': message, 'done_reason': choice.get('finish_reason', '')}
 
 
 def parse_json_answer(content: str) -> Any:
