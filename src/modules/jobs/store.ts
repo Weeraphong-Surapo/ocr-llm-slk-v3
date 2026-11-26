@@ -19,7 +19,7 @@ export type OcrPage = {
 }
 
 export type ResponseFormat = 'auto' | 'json' | 'text'
-export type OcrMode = 'fast' | 'standard' | 'high_accuracy'
+export type OcrMode = 'fast' | 'standard'
 
 export type AnswerReviewItem = {
   path: string
